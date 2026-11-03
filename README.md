@@ -49,6 +49,8 @@ Every text the server writes for people (reasons, options, notes, review warning
 
 The result is always a range plus the reason. Money appears only if you give an hourly-rate range. The bands are a starting point to calibrate, not a quote.
 
+Saved bands: Compare scope > Effort bands edits every [min, max] pair and saves it for all engagements (`GET`/`PUT /api/settings` with `bands`, MCP `drucker_settings`). Only the parts you change are stored; "Back to defaults" (`bands: {}`) clears them. A call's own `bands` still override the saved ones part by part, and every comparison returns the `bands` it used.
+
 ## Surfaces
 
 - REST: `/api/...` (OpenAPI at `/docs`). Writes from another origin are refused.
@@ -61,7 +63,7 @@ SQLite tables: `engagements`, `items` (scope, milestone, material, decision, pay
 
 ## Tests
 
-`python -m pytest -q`: 73 tests covering engagement CRUD and history, scope classes and ranges, proposal tagging and the deny-list, stale-feedback detection, package verification (missing file, bad hash, broken PNG/PDF/GLB/STL/JSON/CSV/ZIP, unauthorised source), deterministic zip bytes, REST, the token-protected agent route and the stdio bridge against a live server.
+`python -m pytest -q`: 83 tests covering engagement CRUD and history, scope classes and ranges, saved effort bands, proposal tagging and the deny-list, stale-feedback detection, package verification (missing file, bad hash, broken PNG/PDF/GLB/STL/JSON/CSV/ZIP, unauthorised source), deterministic zip bytes, REST, the token-protected agent route and the stdio bridge against a live server.
 
 ## Limits
 

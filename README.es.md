@@ -49,6 +49,8 @@ Todo texto que el servidor escribe para personas (motivos, opciones, notas, avis
 
 El resultado es siempre un rango y su motivo. Solo aparece dinero si se da un rango de tarifa por hora. Las bandas son un punto de partida para calibrar, no un presupuesto.
 
+Bandas guardadas: Comparar alcance > Bandas de esfuerzo edita cada par [mín, máx] y lo guarda para todos los encargos (`GET`/`PUT /api/settings` con `bands`, MCP `drucker_settings`). Solo se guardan las partes cambiadas; «Volver a las de por defecto» (`bands: {}`) las borra. Las `bands` de una llamada siguen mandando sobre las guardadas, parte a parte, y cada comparación devuelve las `bands` que usó.
+
 ## Superficies
 
 - REST: `/api/...` (OpenAPI en `/docs`). Se rechazan escrituras desde otro origen.
@@ -61,7 +63,7 @@ Tablas SQLite: `engagements`, `items` (alcance, hito, material, decisión, cobro
 
 ## Pruebas
 
-`python -m pytest -q`: 73 pruebas. Cubren altas y cambios con historial, clases y rangos de alcance, etiquetado de propuestas y lista prohibida, detección de comentarios obsoletos, verificación de paquetes (archivo ausente, hash distinto, PNG/PDF/GLB/STL/JSON/CSV/ZIP rotos, fuente no autorizada), zip con bytes idénticos a igual entrada, REST, la ruta de agente con token y el puente stdio contra un servidor real.
+`python -m pytest -q`: 83 pruebas. Cubren altas y cambios con historial, clases y rangos de alcance, bandas guardadas, etiquetado de propuestas y lista prohibida, detección de comentarios obsoletos, verificación de paquetes (archivo ausente, hash distinto, PNG/PDF/GLB/STL/JSON/CSV/ZIP rotos, fuente no autorizada), zip con bytes idénticos a igual entrada, REST, la ruta de agente con token y el puente stdio contra un servidor real.
 
 ## Límites
 

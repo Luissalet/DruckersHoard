@@ -30,8 +30,9 @@ def _scope_compare(a):
         ctx = {"deliverables": [d["name"] for d in e["deliverables"]],
                "milestones": [{"title": m["title"], "status": m["status"]} for m in e["items"]["milestone"]]}
         a["context"] = {**ctx, **(a.get("context") or {})}
+    bands = scope.merge_bands(engagements.get_settings()["bands_custom"], a.get("bands"))  # saved owner bands, then this call's
     return scope.compare(a.get("initial"), a.get("agreement"), a.get("request"), a.get("request_mode", "delta"),
-                         a.get("context"), a.get("bands"), a.get("hourly_rate"))
+                         a.get("context"), bands, a.get("hourly_rate"))
 
 
 def _review(a):
@@ -44,7 +45,7 @@ def _review(a):
 
 
 def _settings(a):
-    return engagements.set_settings(a) if "denylist" in a else engagements.get_settings()
+    return engagements.set_settings(a) if ("denylist" in a or "bands" in a) else engagements.get_settings()
 
 
 # name, description, properties, required, read-only, destructive, handler
@@ -93,8 +94,9 @@ SPECS = [
      PKG, ["deliverable_id", "version"], True, False, lambda a: package.verify_only(a["deliverable_id"], a["version"], a.get("spec"))),
     ("drucker_package", "Assemble the delivery package of a version: verify, then write manifest.json and package.zip in the data folder. Not ready (and no zip) if any check fails. Without spec, the version's own local file is the editable file.",
      PKG, ["deliverable_id", "version"], False, False, lambda a: package.build(a["deliverable_id"], a["version"], a.get("spec"))),
-    ("drucker_settings", "Read the client-facing deny-list (internal names that must never appear in proposals); pass denylist to replace it.",
-     {"denylist": f("array", items=f())}, [], False, False, _settings),
+    ("drucker_settings", "Read or change the settings shared by every engagement: the client-facing deny-list (internal names that must never appear in proposals) and the effort bands every scope comparison uses (hours as [min, max] per family: format.per_deliverable, content.base/per_deliverable, pipeline.base/per_extra, quantity.per_unit, clarify.base). Pass denylist to replace the list; pass bands with only the parts to change (bands {} restores the defaults). With neither it only reads.",
+     {"denylist": f("array", items=f()),
+      "bands": f("object", description="{family: {part: [min_hours, max_hours]}}; {} = back to the default bands")}, [], False, False, _settings),
     ("drucker_example", "Invented sample engagement, scope-comparison input and package spec shape. Read-only; nothing is stored.",
      {}, [], True, False, lambda a: {"engagement": examples.example_engagement(), "scope_compare": examples.example_scope(),
                                       "package_spec": {"editable_files": ["path/source.ext"], "exports": [{"path": "path/out.pdf"}],

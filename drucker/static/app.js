@@ -187,8 +187,10 @@ async function compareView() {
   <div class="grid"><label>${esc(t("initial"))}<textarea name="initial"></textarea></label><label>${esc(t("agreement"))}<textarea name="agreement"></textarea></label><label>${esc(t("request"))}<textarea name="request" required></textarea></label></div>
   <div class="bar"><label>${esc(t("mode"))}<select name="request_mode"><option value="delta">${esc(t("m_delta"))}</option><option value="full">${esc(t("m_full"))}</option></select></label>
   <label>${esc(t("rate_min"))}<input name="rate_min" type="number" min="0" step="any" /></label><label>${esc(t("rate_max"))}<input name="rate_max" type="number" min="0" step="any" /></label>
-  <label>${esc(t("currency"))}<input name="rate_cur" value="EUR" maxlength="3" size="4" /></label><button class="primary">${esc(t("compare"))}</button></div></form><div id="out"></div>`;
+  <label>${esc(t("currency"))}<input name="rate_cur" value="EUR" maxlength="3" size="4" /></label><button class="primary">${esc(t("compare"))}</button></div></form>
+  <details id="bands"><summary>${esc(t("bands"))}</summary><div id="bands-body"></div></details><div id="out"></div>`;
   picker.bind();
+  await bandsEditor();
   const form = $("#cmp");
   $("#ex").onclick = guard(async () => { const ex = (await api("/api/example")).scope_compare; form.initial.value = ex.initial.join("\n"); form.agreement.value = ex.agreement.join("\n"); form.request.value = ex.request; form.dataset.ctx = JSON.stringify(ex.context); });
   form.onsubmit = guard(async (ev) => {
@@ -201,6 +203,31 @@ async function compareView() {
     if (form.rate_min.value && form.rate_max.value) body.hourly_rate = { min: Number(form.rate_min.value), max: Number(form.rate_max.value), currency: form.rate_cur.value.toUpperCase() };
     renderCompare(await api("/api/scope/compare", "POST", body));
   });
+}
+// Effort bands saved for every comparison (drucker_settings / PUT /api/settings {bands})
+async function bandsEditor() {
+  const st = await api("/api/settings");
+  const rows = Object.entries(st.bands).flatMap(([fam, parts]) => Object.entries(parts).map(([part, [lo, hi]]) => {
+    const custom = st.bands_custom?.[fam]?.[part];
+    return `<tr data-fam="${esc(fam)}" data-part="${esc(part)}"><td>${esc(t("bf_" + fam))}</td><td>${esc(t("bp_" + part))}</td>
+      <td><input type="number" min="0" step="any" class="lo" value="${esc(lo)}" aria-label="${esc(t("band_min"))}" /></td>
+      <td><input type="number" min="0" step="any" class="hi" value="${esc(hi)}" aria-label="${esc(t("band_max"))}" /></td>
+      <td class="muted small">${custom ? esc(t("band_custom")) : esc(t("band_default"))} (${st.default_bands[fam][part].join("–")})</td></tr>`;
+  })).join("");
+  $("#bands-body").innerHTML = `<p class="muted small">${esc(t("bands_intro"))}</p>
+    <table class="bands"><thead><tr><th>${esc(t("band_family"))}</th><th>${esc(t("band_part"))}</th><th>${esc(t("band_min"))}</th><th>${esc(t("band_max"))}</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="bar"><button type="button" id="bands-save">${esc(t("save_bands"))}</button><button type="button" id="bands-reset">${esc(t("reset_bands"))}</button></div>`;
+  $("#bands-save").onclick = guard(async () => {
+    const bands = {};
+    $$("#bands-body tr[data-fam]").forEach((tr) => {
+      const { fam, part } = tr.dataset, pair = [Number($(".lo", tr).value), Number($(".hi", tr).value)];
+      const def = st.default_bands[fam][part], custom = st.bands_custom?.[fam]?.[part];
+      if (custom || pair[0] !== def[0] || pair[1] !== def[1]) (bands[fam] ||= {})[part] = pair;  // only what the owner changed
+    });
+    if (!Object.keys(bands).length) return toast(t("saved"));
+    await api("/api/settings", "PUT", { bands }); toast(t("saved")); await bandsEditor();
+  });
+  $("#bands-reset").onclick = guard(async () => { await api("/api/settings", "PUT", { bands: {} }); toast(t("saved")); await bandsEditor(); });
 }
 function renderCompare(r) {
   const card = (i) => `<div class="card"><span class="chip ${i.class}">${esc(t("c_" + i.class))}</span> <strong>${esc(i.text)}</strong>
