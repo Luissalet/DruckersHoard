@@ -38,7 +38,14 @@ Effort comes from editable rule bands and from which deliverables and milestones
 - `format`: output format of existing deliverables. Last stage only. Default 1-4 h per deliverable.
 - `pipeline`: changes how the work is produced. Earlier stage, so everything after it is redone. Default 16-40 h plus 4-10 h for each extra deliverable or open milestone.
 - `quantity`: more of the same, per extra unit.
-- `content`: new work with no close match.
+- `content`: only an ambiguous overlap with an agreed item that asks for more (default 4-12 h, min forced to 0).
+- `given`: the hours you supply on the item (`{text, hours}` with a number, `[min,max]` or `{min,max}`) are used as given.
+
+New work with no counterpart in the agreement ("a mobile app for sales reps") gets no hours at all: it is `added`, effort `unestimated` (needs specification), listed separately and left out of the totals, which show "+ N items without estimate". Options: `specify` (specify and estimate separately) or `defer`. A default band would grossly understate a whole new product.
+
+### Language
+
+Every text the server writes for people (reasons, options, notes, review warnings, package checks, history lines, errors) is rendered in `lang` (`es` Spanish of Spain, `en`). Tools and the proposal route take `lang`; the UI sends its current language in an `X-Lang` header on every call. Without either, the answer is English (proposals default to Spanish). Machine fields (`class`, `effort.kind`, option codes, check ids, numbers) never change with the language. The history keeps a message key, so old lines can be read in either language. Text that comes from the user's own data, and the validation wording of the underlying schema library outside the common cases, is not translated.
 
 The result is always a range plus the reason. Money appears only if you give an hourly-rate range. The bands are a starting point to calibrate, not a quote.
 
@@ -54,11 +61,11 @@ SQLite tables: `engagements`, `items` (scope, milestone, material, decision, pay
 
 ## Tests
 
-`python -m pytest -q`: 64 tests covering engagement CRUD and history, scope classes and ranges, proposal tagging and the deny-list, stale-feedback detection, package verification (missing file, bad hash, broken PNG/PDF/GLB/STL/JSON/CSV/ZIP, unauthorised source), deterministic zip bytes, REST, the token-protected agent route and the stdio bridge against a live server.
+`python -m pytest -q`: 73 tests covering engagement CRUD and history, scope classes and ranges, proposal tagging and the deny-list, stale-feedback detection, package verification (missing file, bad hash, broken PNG/PDF/GLB/STL/JSON/CSV/ZIP, unauthorised source), deterministic zip bytes, REST, the token-protected agent route and the stdio bridge against a live server.
 
 ## Limits
 
-- Hours are rule-based ranges. No model is used, so wording the rules do not know gets the default `content` band or `ambiguous`.
+- Hours are rule-based ranges. No model is used, so wording the rules do not know is either `ambiguous` or, when nothing in the agreement resembles it, an item without estimate.
 - Package checks prove a file opens and matches its hash, not that it is good. Remote URLs and Atlas pointers cannot be verified, so a package that lists them is not ready until a local path is given.
 - Format checks are basic structure checks (zip, JSON, CSV, PDF, PNG, GLB, STL), not full parsers.
 - No authentication on the UI (local 127.0.0.1 app, like the rest of the family).

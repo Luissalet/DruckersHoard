@@ -10,8 +10,8 @@ from fastapi import Body, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, db, engagements, examples, package, proposal, review, scope, tools
-from .errors import DruckerError
+from . import __version__, db, engagements, examples, package, proposal, review, scope, texts, tools
+from .errors import DruckerError, err
 from .hoard_link.copilot import install_copilot
 from .hoard_link.tokens import check_bearer, read_or_create_token
 
@@ -29,11 +29,13 @@ install_copilot(app, "drucker", str(db.data_dir()), app_name="Drucker's Hoard")
 
 @app.middleware("http")
 async def same_origin(request: Request, call_next):
-    """A page on another origin must not be able to write through the browser."""
-    origin = request.headers.get("origin")
-    if request.method not in ("GET", "HEAD", "OPTIONS") and origin and urlsplit(origin).netloc != request.headers.get("host"):
-        return JSONResponse({"ok": False, "error": "cross-origin request refused"}, status_code=403)
-    return await call_next(request)
+    """A page on another origin must not be able to write through the browser. Also reads the language of the page."""
+    lang = texts.norm(request.headers.get("x-lang") or request.query_params.get("lang"))
+    with texts.using(lang):
+        origin = request.headers.get("origin")
+        if request.method not in ("GET", "HEAD", "OPTIONS") and origin and urlsplit(origin).netloc != request.headers.get("host"):
+            return JSONResponse({"ok": False, "error": texts.tr("e.cross_origin")}, status_code=403)
+        return await call_next(request)
 
 
 @app.exception_handler(DruckerError)
@@ -64,7 +66,7 @@ def agent_tools():
 @app.post("/api/agent/call")
 async def agent_call(request: Request, body: dict[str, Any] = Body(...)):
     if not check_bearer(request.headers.get("authorization"), token()):
-        return JSONResponse({"ok": False, "error": "missing or invalid token"}, status_code=401)
+        return JSONResponse({"ok": False, "error": texts.tr("e.bad_token")}, status_code=401)
     name = body.get("name") or body.get("tool")
     try:
         return {"ok": True, "tool": name, "result": tools.call(name, body.get("arguments") or {})}
@@ -141,21 +143,23 @@ def remove_item(eid: str, item_id: str):
 
 @app.post("/api/scope/compare")
 def scope_compare(body: dict = Body(...)):
-    return tools._scope_compare(body)
+    with texts.using(body.get("lang")):
+        return tools._scope_compare(body)
 
 
 @app.post("/api/engagements/{eid}/proposal")
 def make_proposal(eid: str, body: dict = Body(default={})):
-    return proposal.proposal(eid, body.get("format", "json"), body.get("lang", "es"), body.get("denylist"))
+    return proposal.proposal(eid, body.get("format", "json"), body.get("lang"), body.get("denylist"))
 
 
 @app.get("/api/engagements/{eid}/proposal.{ext}")
-def download_proposal(eid: str, ext: str, lang: str = "es"):
+def download_proposal(eid: str, ext: str, lang: str | None = None):
     if ext not in ("md", "html"):
-        raise DruckerError("Use .md or .html", status=404)
+        raise err("e.use_md_html", status=404)
     out = proposal.proposal(eid, ext, lang)
+    name = "propuesta" if (texts.norm(lang) or texts.explicit() or "es") == "es" else "proposal"
     return Response(out["content"], media_type="text/markdown; charset=utf-8" if ext == "md" else "text/html; charset=utf-8",
-                    headers={"Content-Disposition": f'attachment; filename="propuesta.{ext}"'})
+                    headers={"Content-Disposition": f'attachment; filename="{name}.{ext}"'})
 
 
 @app.post("/api/engagements/{eid}/deliverables")
@@ -203,5 +207,5 @@ def package_zip(pid: str):
     with db.connect() as conn:
         row = conn.execute("SELECT zip_path FROM packages WHERE id=?", (pid,)).fetchone()
     if not row or not row["zip_path"] or not Path(row["zip_path"]).is_file():
-        raise DruckerError("No zip for that package (not ready, or never built)", status=404)
+        raise err("e.no_zip", status=404)
     return FileResponse(row["zip_path"], media_type="application/zip", filename="package.zip")

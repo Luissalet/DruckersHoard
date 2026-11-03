@@ -10,7 +10,7 @@ const $$ = (sel, root = main) => [...root.querySelectorAll(sel)];
 const ctx = { page: "", engagement: null, deliverable: null };
 
 async function api(path, method = "GET", body) {
-  const res = await fetch(path, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+  const res = await fetch(path, { method, headers: { "X-Lang": lang, ...(body ? { "Content-Type": "application/json" } : {}) }, body: body ? JSON.stringify(body) : undefined });
   const data = res.headers.get("content-type")?.includes("json") ? await res.json() : await res.text();
   if (!res.ok) { const e = new Error(data.error || data.detail || res.statusText); e.data = data; throw e; }
   return data;
@@ -193,7 +193,7 @@ async function compareView() {
   $("#ex").onclick = guard(async () => { const ex = (await api("/api/example")).scope_compare; form.initial.value = ex.initial.join("\n"); form.agreement.value = ex.agreement.join("\n"); form.request.value = ex.request; form.dataset.ctx = JSON.stringify(ex.context); });
   form.onsubmit = guard(async (ev) => {
     ev.preventDefault();
-    const body = { request: form.request.value, request_mode: form.request_mode.value };
+    const body = { request: form.request.value, request_mode: form.request_mode.value, lang };
     if (form.initial.value.trim()) body.initial = form.initial.value;
     if (form.agreement.value.trim()) body.agreement = form.agreement.value;
     if (ctx.engagement) body.engagement_id = ctx.engagement;
@@ -206,10 +206,10 @@ function renderCompare(r) {
   const card = (i) => `<div class="card"><span class="chip ${i.class}">${esc(t("c_" + i.class))}</span> <strong>${esc(i.text)}</strong>
     <div class="muted small">${esc(i.reason)}${i.note ? " " + esc(i.note) : ""}</div>
     ${i.match ? `<div class="muted small">${esc(t("matches"))}: “${esc(i.match.text)}” (${i.match.score})</div>` : ""}
-    ${i.effort && i.effort.kind !== "none" && i.effort.kind !== "removal" ? `<div>${esc(t("effort"))}: <span class="range">${range(i.effort.hours)}</span>${money(i.effort.money)} <span class="chip">${esc(i.effort.kind)}</span><div class="muted small">${esc(i.effort.reason)}</div></div>` : ""}
-    ${i.alternatives ? `<div class="small"><strong>${esc(t("options"))}</strong><ul class="plain">${i.alternatives.map((a) => `<li>${a.option === i.recommended ? "★ " : ""}<strong>${esc(t("o_" + a.option))}</strong>: ${esc(a.summary)}</li>`).join("")}${i.recommended === "clarify" ? `<li>★ <strong>${esc(t("o_clarify"))}</strong></li>` : ""}</ul></div>` : ""}</div>`;
+    ${i.effort && i.effort.kind !== "none" && i.effort.kind !== "removal" ? `<div>${esc(t("effort"))}: <span class="range">${i.effort.hours ? range(i.effort.hours) + money(i.effort.money) : esc(t("unestimated"))}</span> <span class="chip">${esc(t("k_" + i.effort.kind))}</span><div class="muted small">${esc(i.effort.reason)}</div></div>` : ""}
+    ${i.alternatives ? `<div class="small"><strong>${esc(t("options"))}</strong><ul class="plain">${i.alternatives.map((a) => `<li>${a.option === i.recommended ? "★ " : ""}<strong>${esc(a.label || t("o_" + a.option))}</strong>: ${esc(a.summary)}</li>`).join("")}${i.recommended === "clarify" ? `<li>★ <strong>${esc(t("o_clarify"))}</strong></li>` : ""}</ul></div>` : ""}</div>`;
   $("#out").innerHTML = `<h2>${Object.entries(r.counts).map(([k, v]) => `<span class="chip ${k}">${esc(t("c_" + k))} ${v}</span>`).join(" ")}</h2>
-    <div class="okbox">${esc(t("total"))}: <span class="range">${range(r.totals.hours)}</span> · ${esc(t("certain"))}: ${range(r.totals.certain_hours)} · ${esc(t("up_to"))} +${r.totals.uncertain_hours_max} ${esc(t("hours"))}</div>
+    <div class="okbox">${esc(t("total"))}: <span class="range">${range(r.totals.hours)}</span> · ${esc(t("certain"))}: ${range(r.totals.certain_hours)} · ${esc(t("up_to"))} +${r.totals.uncertain_hours_max} ${esc(t("hours"))}${r.totals.unestimated_items ? ` · <strong>+ ${r.totals.unestimated_items} ${esc(t("unestimated_items"))}</strong>` : ""}</div>
     ${r.items.map(card).join("")}${r.removed.map(card).join("")}<p class="muted small">${esc(r.method)}</p>`;
 }
 

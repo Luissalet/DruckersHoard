@@ -8,7 +8,8 @@ import re
 import unicodedata
 from difflib import SequenceMatcher
 
-from .errors import DruckerError
+from . import texts
+from .errors import err
 
 CLASSES = ("added", "removed", "ambiguous", "already_included", "unchanged")
 STOP = set("a al algo and as at con de del el ella en es esta este for from i in is la las lo los me mi of on or para por que se si "
@@ -25,7 +26,7 @@ DEFAULT_BANDS = {  # hours; a starting point to calibrate, never a quote
     "pipeline": {"base": [16, 40], "per_extra": [4, 10]},
     "quantity": {"per_unit": [1, 3]},
     "clarify": {"base": [0, 0]},
-}
+}  # "content" applies only to an ambiguous overlap with an agreed item; a new item with no match is never banded
 INCLUDE_LIMIT_HOURS = 4
 
 
@@ -78,12 +79,32 @@ def split_items(source) -> list[dict]:
             if isinstance(entry, str) and entry.strip():
                 out.append({"id": f"i{n}", "text": entry.strip()})
             elif isinstance(entry, dict) and str(entry.get("text") or entry.get("title") or "").strip():
-                out.append({"id": str(entry.get("id") or f"i{n}"), "text": str(entry.get("text") or entry.get("title")).strip(),
-                            "touches": entry.get("touches") or {}})
+                item = {"id": str(entry.get("id") or f"i{n}"), "text": str(entry.get("text") or entry.get("title")).strip(),
+                        "touches": entry.get("touches") or {}}
+                if entry.get("hours") not in (None, ""):
+                    item["hours"] = _given_hours(entry["hours"])
+                out.append(item)
             else:
-                raise DruckerError("Scope items must be text or objects with a text field")
+                raise err("e.scope_items")
         return out
-    raise DruckerError("Scope must be text or a list of items")
+    raise err("e.scope_type")
+
+
+def _given_hours(value):
+    """Explicit hours from the caller: a number, [min, max] or {min, max}."""
+    if isinstance(value, bool):
+        raise err("e.hours")
+    if isinstance(value, (int, float)):
+        lo = hi = value
+    elif isinstance(value, (list, tuple)) and len(value) == 2:
+        lo, hi = value
+    elif isinstance(value, dict):
+        lo, hi = value.get("min"), value.get("max")
+    else:
+        raise err("e.hours")
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 for v in (lo, hi)) or lo > hi:
+        raise err("e.hours")
+    return {"min": lo, "max": hi}
 
 
 def _has(text, words):
@@ -116,43 +137,52 @@ def _range(lo, hi):
     return {"min": round(lo, 1), "max": round(hi, 1)}
 
 
+def _touch(dels):
+    return texts.tr("s.touch", v=", ".join(dels)) if dels else ""
+
+
 def estimate(item, matched, kind_hint, context, bands, rate):
-    """Effort range with the reason. ``kind_hint`` overrides keyword classification (e.g. quantity)."""
+    """Effort range with the reason, or ``None`` when the item is new work that cannot honestly get hours.
+
+    Banded ranges only for a recognisable change of an agreed item (quantity, format, pipeline rework, or an ambiguous
+    overlap) or when the caller gives the hours. ``kind_hint`` overrides keyword classification (e.g. quantity)."""
     dels, mils = _touched(item, context)
     text = item["text"]
     open_ms = [m for m in mils if _milestone_open(m, context)]
-    if kind_hint == "quantity":
+    if item.get("hours"):
+        lo, hi = item["hours"]["min"], item["hours"]["max"]
+        kind, reason = "given", texts.tr("s.eff_given", rng=f"{lo:g}-{hi:g} h" if lo != hi else f"{lo:g} h")
+    elif kind_hint == "quantity":
         a, b = sorted(int(x) for x in (kind_hint_numbers(item, matched) or (1, 1)))
         delta = max(1, b - a)
         lo, hi = (v * delta for v in bands["quantity"]["per_unit"])
-        kind, reason = "quantity", (f"Quantity changes from {a} to {b}: about {delta} more unit(s) at {bands['quantity']['per_unit'][0]}-"
-                                    f"{bands['quantity']['per_unit'][1]} h each; the process itself does not change.")
+        kind, reason = "quantity", texts.tr("s.eff_qty", a=a, b=b, delta=delta, lo=bands["quantity"]["per_unit"][0], hi=bands["quantity"]["per_unit"][1])
     elif _has(text, PIPELINE):
         extra = max(0, len(dels) - 1) + len(open_ms)
         lo = bands["pipeline"]["base"][0] + extra * bands["pipeline"]["per_extra"][0]
         hi = bands["pipeline"]["base"][1] + extra * bands["pipeline"]["per_extra"][1]
         kind = "pipeline"
-        reason = ("Changes how the work is produced, not just how it looks: it touches an earlier stage, so everything after it is redone "
-                  "and revalidated" + (f" (deliverables: {', '.join(dels)})" if dels else "") +
-                  (f" (open milestones: {', '.join(open_ms)})" if open_ms else "") + ".")
+        reason = texts.tr("s.eff_pipe", dels=texts.tr("s.pipe_dels", v=", ".join(dels)) if dels else "",
+                          ms=texts.tr("s.pipe_ms", v=", ".join(open_ms)) if open_ms else "")
     elif _has(text, FORMAT) and len(dels) <= 1:
         n = max(1, len(dels))
         lo, hi = (n * v for v in bands["format"]["per_deliverable"])
         kind = "format"
-        reason = (f"Output format change on {n} deliverable(s)" + (f" ({', '.join(dels)})" if dels else "") +
-                  "; it touches only the last stage, no earlier milestone is reopened.")
+        reason = texts.tr("s.eff_fmt1", n=n, dels=texts.tr("s.fmt_dels", v=", ".join(dels)) if dels else "")
     elif _has(text, FORMAT):
         n = len(dels)
         lo, hi = (n * v for v in bands["format"]["per_deliverable"])
         kind = "format"
-        reason = f"Output format change repeated across {n} deliverables ({', '.join(dels)}); still last-stage work only."
+        reason = texts.tr("s.eff_fmtn", n=n, dels=", ".join(dels))
+    elif matched is None:
+        return {"kind": "unestimated", "hours": None, "reason": texts.tr("s.eff_unest", touch=_touch(dels)),
+                "touches": {"deliverables": dels, "milestones": mils}}
     else:
         n = len(dels)
         lo = bands["content"]["base"][0] + n * bands["content"]["per_deliverable"][0]
         hi = bands["content"]["base"][1] + n * bands["content"]["per_deliverable"][1]
         kind = "content"
-        reason = ("New work item with no close match in the agreement" + (f"; it touches {', '.join(dels)}" if dels else "") +
-                  ". Range from the default band; refine once the item is specified.")
+        reason = texts.tr("s.eff_content", touch=_touch(dels))
     out = {"kind": kind, "hours": _range(lo, hi), "reason": reason, "touches": {"deliverables": dels, "milestones": mils}}
     if rate:
         out["money"] = {"min": round(lo * rate["min"], 2), "max": round(hi * rate["max"], 2), "currency": rate.get("currency", "")}
@@ -167,46 +197,46 @@ def kind_hint_numbers(item, matched):
 
 
 def alternatives(change_class, eff, rate_currency=""):
+    defer = {"option": "defer", "label": texts.tr("s.o_defer"), "summary": texts.tr("s.o_defer_sum"),
+             "changes_price": False, "changes_dates": False}
+    if eff["kind"] == "unestimated":
+        specify = {"option": "specify", "label": texts.tr("s.o_specify"), "summary": texts.tr("s.o_specify_sum"),
+                   "changes_price": True, "changes_dates": True}
+        return [specify, defer], "specify"
     lo, hi = eff["hours"]["min"], eff["hours"]["max"]
     rng = f"{lo:g}-{hi:g} h"
-    include = {"option": "include", "label": "Include in the current scope",
-               "summary": f"Absorb {rng} inside the agreed price and dates.",
+    include = {"option": "include", "label": texts.tr("s.o_include"), "summary": texts.tr("s.o_include_sum", rng=rng),
                "cost_to_us_hours": eff["hours"], "changes_price": False, "changes_dates": False}
-    order = {"option": "change_order", "label": "Change order with a range",
-             "summary": f"Agree in writing an extra {rng}" + (f" ({eff['money']['min']:g}-{eff['money']['max']:g} {eff['money']['currency']})" if eff.get("money") else "") +
-                        "; confirm whether milestones move.",
+    money = f" ({eff['money']['min']:g}-{eff['money']['max']:g} {eff['money']['currency']})" if eff.get("money") else ""
+    order = {"option": "change_order", "label": texts.tr("s.o_order"), "summary": texts.tr("s.o_order_sum", rng=rng, money=money),
              "hours": eff["hours"], "money": eff.get("money"), "changes_price": True, "changes_dates": eff["kind"] == "pipeline"}
-    defer = {"option": "defer", "label": "Defer to a later phase",
-             "summary": "Keep the current scope and dates; schedule this separately after delivery.",
-             "changes_price": False, "changes_dates": False}
     if change_class == "ambiguous":
         rec = "clarify"
-    elif eff["kind"] in ("format", "quantity") and hi <= INCLUDE_LIMIT_HOURS:
+    elif eff["kind"] in ("format", "quantity", "given") and hi <= INCLUDE_LIMIT_HOURS:
         rec = "include"
-    elif eff["kind"] == "pipeline" or hi > 16:
-        rec = "change_order"
     else:
         rec = "change_order"
     return [include, order, defer], rec
 
 
+@texts.localized
 def compare(initial=None, agreement=None, request=None, request_mode="delta", context=None, bands=None, hourly_rate=None) -> dict:
     """``request_mode``: delta (the request lists only new or changed asks) or full (it restates the whole scope, so
     agreed items it leaves out count as removed). ``context``: {deliverables:[..], milestones:[..]} used to find which
     deliverables/milestones an item touches. ``hourly_rate``: {min,max,currency} optional."""
     if request_mode not in ("delta", "full"):
-        raise DruckerError("request_mode must be delta or full")
+        raise err("e.request_mode")
     ini, agr, req = split_items(initial), split_items(agreement), split_items(request)
     if not req:
-        raise DruckerError("The new request has no items")
+        raise err("e.no_request")
     if not agr and not ini:
-        raise DruckerError("Give the agreement or the initial request to compare against")
+        raise err("e.no_baseline")
     context = context or {}
     merged = {k: {**DEFAULT_BANDS[k], **((bands or {}).get(k) or {})} for k in DEFAULT_BANDS}
     rate = None
     if hourly_rate:
         if not all(isinstance(hourly_rate.get(k), (int, float)) and hourly_rate[k] >= 0 for k in ("min", "max")) or hourly_rate["min"] > hourly_rate["max"]:
-            raise DruckerError("hourly_rate needs numeric min <= max")
+            raise err("e.rate")
         rate = hourly_rate
     baseline = agr or ini
     items = []
@@ -217,38 +247,40 @@ def compare(initial=None, agreement=None, request=None, request_mode="delta", co
         nr, nb = (numbers(r["text"]), numbers(best["text"])) if best else (set(), set())
         neg = best and (bool(NEGATIONS & set(fold(r["text"]).split())) != bool(NEGATIONS & set(fold(best["text"]).split())))
         if best and score >= 0.85 and nr == nb and not neg:
-            cls, reason = "unchanged", "Same as an agreed item."
+            cls, reason = "unchanged", texts.tr("s.same")
         elif best and score >= 0.5 and nr != nb and (nr or nb) and nr and nb:
             cls, hint = "ambiguous", "quantity"
-            reason = f"Looks like the agreed item but the number changes ({', '.join(sorted(nb))} -> {', '.join(sorted(nr))})."
+            reason = texts.tr("s.qty", old=", ".join(sorted(nb)), new=", ".join(sorted(nr)))
         elif best and score >= 0.5 and neg:
-            cls, reason = "ambiguous", "Similar to an agreed item but it flips an exclusion or negation."
+            cls, reason = "ambiguous", texts.tr("s.negation")
         elif best and contain >= 0.8 and len(set(tokens(r["text"]))) >= 2 and score >= 0.4:
-            cls, reason = "already_included", "Wording differs but everything it asks is in an agreed item."
+            cls, reason = "already_included", texts.tr("s.included")
         elif best and (score >= 0.4 or contain >= 0.5):
-            cls, reason = "ambiguous", "Overlaps an agreed item but asks for more or something different; not certain."
+            cls, reason = "ambiguous", texts.tr("s.overlap")
         else:
-            cls, reason = "added", "No agreed item covers it."
+            cls, reason = "added", texts.tr("s.added")
             best = None if score < 0.2 else best
-        entry = {"id": r["id"], "text": r["text"], "class": cls, "reason": reason,
+        entry = {"id": r["id"], "text": r["text"], "class": cls, "reason": reason, "estimated": True,
                  "match": {"id": best["id"], "text": best["text"], "score": score, "containment": contain} if best else None}
         if cls == "added" and ini and agr:
             dropped = max(((*similarity(r["text"], i["text"]), i) for i in ini), key=lambda s: s[0])
             if dropped[0] >= 0.5:
-                entry["note"] = f"It was in the initial request ({dropped[2]['text']!r}) and is not in the agreement."
+                entry["note"] = texts.tr("s.dropped", text=dropped[2]["text"])
         if cls in ("added", "ambiguous"):
             eff = estimate(r, best if cls == "ambiguous" else None, hint, context, merged, rate)
-            if cls == "ambiguous":
+            if eff["kind"] == "unestimated":
+                entry["estimated"] = False
+            elif cls == "ambiguous" and eff["kind"] != "given":
                 eff["hours"]["min"] = 0.0
-                eff["reason"] += " Minimum is zero because it may already be covered once clarified."
+                eff["reason"] += texts.tr("s.min_zero")
                 if eff.get("money"):
                     eff["money"]["min"] = 0.0
             entry["effort"] = eff
             entry["alternatives"], entry["recommended"] = alternatives(cls, eff)
         elif cls == "already_included":
-            entry["effort"] = {"kind": "none", "hours": _range(0, 0), "reason": "Already part of the agreement; no extra work to price."}
+            entry["effort"] = {"kind": "none", "hours": _range(0, 0), "reason": texts.tr("s.already")}
         else:
-            entry["effort"] = {"kind": "none", "hours": _range(0, 0), "reason": "No change."}
+            entry["effort"] = {"kind": "none", "hours": _range(0, 0), "reason": texts.tr("s.nochange")}
         items.append(entry)
     removed = []
     if request_mode == "full":
@@ -257,17 +289,17 @@ def compare(initial=None, agreement=None, request=None, request_mode="delta", co
             if b["id"] in matched:
                 continue
             removed.append({"id": b["id"], "text": b["text"], "class": "removed",
-                            "reason": "Agreed, but the new request does not mention it.",
-                            "effort": {"kind": "removal", "hours": _range(0, 0), "reason": "Work already done on it is not recoverable; "
-                                       "any saving applies only to work not yet started. Confirm status before crediting.", "direction": "save"}})
+                            "reason": texts.tr("s.removed"),
+                            "effort": {"kind": "removal", "hours": _range(0, 0), "reason": texts.tr("s.removal"), "direction": "save"}})
     counts = {c: 0 for c in CLASSES}
     for e in items + removed:
         counts[e["class"]] += 1
-    firm = sum(i["effort"]["hours"]["max"] for i in items if i["class"] == "added")
-    firm_lo = sum(i["effort"]["hours"]["min"] for i in items if i["class"] == "added")
-    amb_hi = sum(i["effort"]["hours"]["max"] for i in items if i["class"] == "ambiguous")
+    est = [i for i in items if i["effort"]["hours"] is not None]
+    firm = sum(i["effort"]["hours"]["max"] for i in est if i["class"] == "added")
+    firm_lo = sum(i["effort"]["hours"]["min"] for i in est if i["class"] == "added")
+    amb_hi = sum(i["effort"]["hours"]["max"] for i in est if i["class"] == "ambiguous")
     return {"counts": counts, "items": items, "removed": removed,
-            "totals": {"hours": _range(firm_lo, firm + amb_hi), "certain_hours": _range(firm_lo, firm), "uncertain_hours_max": round(amb_hi, 1)},
-            "baseline": "agreement" if agr else "initial request", "request_mode": request_mode,
-            "method": "Deterministic token and sequence similarity. Effort ranges follow editable rule bands and the deliverables each item touches; "
-                      "they are not prices and not a quote. Uncertain matches are marked ambiguous, never forced."}
+            "totals": {"hours": _range(firm_lo, firm + amb_hi), "certain_hours": _range(firm_lo, firm), "uncertain_hours_max": round(amb_hi, 1),
+                       "unestimated_items": sum(1 for i in items if i["estimated"] is False)},
+            "baseline": "agreement" if agr else "initial request", "request_mode": request_mode, "lang": texts.cur(),
+            "method": texts.tr("s.method")}
