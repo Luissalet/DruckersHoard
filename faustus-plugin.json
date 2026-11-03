@@ -1,0 +1,89 @@
+{
+  "schema": 1,
+  "id": "drucker",
+  "name": "Drucker's Hoard",
+  "purpose": "Professional engagement office: engagement files, scope comparison, proposals, deliverable review and reproducible delivery packages. Keeps references to contacts, money movements and files owned by other apps, never copies.",
+  "capabilities": [
+    "engagement-file",
+    "engagement-history",
+    "scope-comparison",
+    "effort-ranges",
+    "change-order-options",
+    "proposal-drafts",
+    "claim-tagging",
+    "internal-name-deny-list",
+    "deliverable-versions",
+    "anchored-review-comments",
+    "stale-feedback-detection",
+    "delivery-packages",
+    "export-validation",
+    "package-manifest"
+  ],
+  "placeholders": [
+    "DRUCKER_DIR",
+    "PYTHON",
+    "APP_URL",
+    "TOKEN_FILE"
+  ],
+  "defaults": {
+    "APP_URL": "http://127.0.0.1:5246",
+    "TOKEN_FILE": "{DRUCKER_DIR}/data/mcp-token",
+    "PYTHON": "{DRUCKER_DIR}/.venv/Scripts/python.exe"
+  },
+  "app": {
+    "url_default": "http://127.0.0.1:5246",
+    "ui_url": "{APP_URL}/",
+    "health": {
+      "path": "/api/health",
+      "expect": {
+        "service": "drucker-hoard"
+      }
+    },
+    "launch_hint": {
+      "kind": "process",
+      "executable": "{PYTHON}",
+      "argv": [
+        "-m",
+        "drucker"
+      ],
+      "cwd": "{DRUCKER_DIR}",
+      "readiness": {
+        "url": "{APP_URL}/api/health",
+        "timeout_s": 20
+      },
+      "port_argument": "--port"
+    },
+    "identify": {
+      "service": [
+        "drucker-hoard"
+      ],
+      "title": [
+        "drucker"
+      ]
+    }
+  },
+  "mcp": {
+    "transport": "stdio",
+    "command": "{PYTHON}",
+    "args": [
+      "-m",
+      "drucker.mcp_server"
+    ],
+    "env": {
+      "PYTHONPATH": "{DRUCKER_DIR}",
+      "DRUCKER_URL": "{APP_URL}",
+      "DRUCKER_TOKEN_FILE": "{TOKEN_FILE}"
+    }
+  },
+  "notes": "Explicit startup only. MCP stdio is a bridge: tools/list needs no running app; tools/call forwards to the app on 127.0.0.1 with the token the app writes to its data folder (data/mcp-token). Start the app first. Copilot uses the canonical family relay.",
+  "x-family": {
+    "copilot": {
+      "contract_version": "1.0",
+      "info": "/api/copilot/info",
+      "panel": "/api/copilot/panel.js",
+      "proxy": "/api/copilot/proxy",
+      "launcher": "/api/copilot/launcher.js"
+    },
+    "agent_contract": false
+  }
+}
