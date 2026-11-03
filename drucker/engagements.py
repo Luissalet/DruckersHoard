@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
-from . import db, texts
+from . import db, scope, texts
 from .errors import DruckerError, err, not_found
 from .models import ITEM_KINDS, ITEM_MODELS, EngagementIn
 
@@ -192,19 +192,40 @@ def _msg(row):
     return m["key"], m["params"], texts.cur()
 
 
-# ---- settings (deny-list shared by every engagement unless the engagement has its own)
+# ---- settings (deny-list shared by every engagement unless the engagement has its own; effort bands used by every
+# scope comparison unless the call passes its own)
 def get_settings():
     with db.connect() as conn:
-        row = conn.execute("SELECT value FROM settings WHERE key='denylist'").fetchone()
-    return {"denylist": db.loads(row["value"]) if row else list(DEFAULT_DENYLIST), "default_denylist": DEFAULT_DENYLIST}
+        rows = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings WHERE key IN ('denylist', 'bands')")}
+    saved = db.loads(rows["bands"]) if "bands" in rows else {}
+    return {"denylist": db.loads(rows["denylist"]) if "denylist" in rows else list(DEFAULT_DENYLIST), "default_denylist": DEFAULT_DENYLIST,
+            "bands": scope.merge_bands(saved), "bands_custom": saved, "default_bands": scope.merge_bands()}
 
 
 def set_settings(data):
-    words = data.get("denylist")
-    if not isinstance(words, list) or not all(isinstance(w, str) for w in words):
-        raise err("e.denylist_list")
-    words = [w.strip() for w in words if w.strip()]
+    """Replace the deny-list and/or change the effort bands: the parts given override the saved ones; ``bands: {}`` (or
+    null) goes back to the default bands."""
+    if not isinstance(data, dict) or ("denylist" not in data and "bands" not in data):
+        raise err("e.settings_keys")
+    words = None
+    if "denylist" in data:
+        words = data["denylist"]
+        if not isinstance(words, list) or not all(isinstance(w, str) for w in words):
+            raise err("e.denylist_list")
+        words = [w.strip() for w in words if w.strip()]
+    bands = None
+    if data.get("bands"):
+        bands = get_settings()["bands_custom"]
+        for fam, parts in scope.validate_bands(data["bands"]).items():
+            bands.setdefault(fam, {}).update(parts)
     with db.connect() as conn:
-        conn.execute("INSERT INTO settings(key,value) VALUES('denylist',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                     (db.dumps(words),))
+        if words is not None:
+            conn.execute("INSERT INTO settings(key,value) VALUES('denylist',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         (db.dumps(words),))
+        if "bands" in data:
+            if bands:
+                conn.execute("INSERT INTO settings(key,value) VALUES('bands',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                             (db.dumps(bands),))
+            else:
+                conn.execute("DELETE FROM settings WHERE key='bands'")
     return get_settings()

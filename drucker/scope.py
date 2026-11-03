@@ -30,6 +30,30 @@ DEFAULT_BANDS = {  # hours; a starting point to calibrate, never a quote
 INCLUDE_LIMIT_HOURS = 4
 
 
+def validate_bands(bands) -> dict:
+    """Owner-calibrated bands: only known families/parts, each a [min, max] pair of non-negative hours with min <= max."""
+    if not isinstance(bands, dict):
+        raise err("e.bands")
+    out: dict = {}
+    for fam, parts in bands.items():
+        if fam not in DEFAULT_BANDS or not isinstance(parts, dict):
+            raise err("e.bands")
+        for part, pair in parts.items():
+            ok = (part in DEFAULT_BANDS[fam] and isinstance(pair, (list, tuple)) and len(pair) == 2
+                  and all(isinstance(x, (int, float)) and not isinstance(x, bool) and x >= 0 for x in pair) and pair[0] <= pair[1])
+            if not ok:
+                raise err("e.bands")
+            out.setdefault(fam, {})[part] = [pair[0], pair[1]]
+    return out
+
+
+def merge_bands(*layers) -> dict:
+    """Defaults, then each layer in order (saved owner bands, then the bands of one call) overriding part by part."""
+    return {fam: {**{p: list(v) for p, v in DEFAULT_BANDS[fam].items()},
+                  **{p: list(v) for layer in layers for p, v in (((layer or {}).get(fam) or {}).items())}}
+            for fam in DEFAULT_BANDS}
+
+
 def fold(text: str) -> str:
     text = unicodedata.normalize("NFKD", str(text)).encode("ascii", "ignore").decode()
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", text.lower())).strip()
@@ -232,7 +256,7 @@ def compare(initial=None, agreement=None, request=None, request_mode="delta", co
     if not agr and not ini:
         raise err("e.no_baseline")
     context = context or {}
-    merged = {k: {**DEFAULT_BANDS[k], **((bands or {}).get(k) or {})} for k in DEFAULT_BANDS}
+    merged = merge_bands(bands)
     rate = None
     if hourly_rate:
         if not all(isinstance(hourly_rate.get(k), (int, float)) and hourly_rate[k] >= 0 for k in ("min", "max")) or hourly_rate["min"] > hourly_rate["max"]:
@@ -301,5 +325,5 @@ def compare(initial=None, agreement=None, request=None, request_mode="delta", co
     return {"counts": counts, "items": items, "removed": removed,
             "totals": {"hours": _range(firm_lo, firm + amb_hi), "certain_hours": _range(firm_lo, firm), "uncertain_hours_max": round(amb_hi, 1),
                        "unestimated_items": sum(1 for i in items if i["estimated"] is False)},
-            "baseline": "agreement" if agr else "initial request", "request_mode": request_mode, "lang": texts.cur(),
+            "baseline": "agreement" if agr else "initial request", "request_mode": request_mode, "lang": texts.cur(), "bands": merged,
             "method": texts.tr("s.method")}
