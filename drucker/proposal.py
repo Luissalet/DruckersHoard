@@ -4,8 +4,8 @@ from __future__ import annotations
 import html
 import re
 
-from . import engagements
-from .errors import DruckerError
+from . import engagements, texts
+from .errors import err
 from .scope import fold
 
 TAGS = ("verified", "assumption", "question")
@@ -42,9 +42,10 @@ def _num(v):
     return f"{v:,.0f}".replace(",", " ") if float(v).is_integer() else f"{v:,.2f}".replace(",", " ")
 
 
-def build(engagement_id, lang="es", denylist=None):
+def build(engagement_id, lang=None, denylist=None):
+    lang = lang or texts.explicit() or "es"
     if lang not in T:
-        raise DruckerError("lang must be es or en")
+        raise err("e.lang")
     t = T[lang]
     e = engagements.get(engagement_id)
     sentences = []
@@ -126,11 +127,11 @@ def check_denylist(sentences, title, words):
 
 def render(draft, fmt):
     if fmt not in ("md", "html"):
-        raise DruckerError("format must be md or html")
+        raise err("e.format_md_html")
     if draft["violations"]:
         terms = sorted({v["term"] for v in draft["violations"]})
-        raise DruckerError("Refused: client-facing material would contain internal names: " + ", ".join(terms),
-                           violations=draft["violations"])
+        with texts.using(draft["lang"]):
+            raise err("e.refused_names", terms=", ".join(terms), extra={"violations": draft["violations"]})
     labels = TAG_LABEL[draft["lang"]]
     by = {}
     for s in draft["sentences"]:
@@ -154,7 +155,7 @@ def render(draft, fmt):
     return "".join(parts) + "</body></html>\n"
 
 
-def proposal(engagement_id, fmt="json", lang="es", denylist=None):
+def proposal(engagement_id, fmt="json", lang=None, denylist=None):
     draft = build(engagement_id, lang, denylist)
     if fmt == "json":
         return draft

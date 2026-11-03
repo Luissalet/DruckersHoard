@@ -9,6 +9,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import texts
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS engagements (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, client_name TEXT NOT NULL DEFAULT '', client_ref TEXT,
@@ -21,7 +23,7 @@ CREATE TABLE IF NOT EXISTS items (
 CREATE INDEX IF NOT EXISTS items_by_eng ON items(engagement_id, kind, seq);
 CREATE TABLE IF NOT EXISTS history (
   id INTEGER PRIMARY KEY AUTOINCREMENT, engagement_id TEXT NOT NULL, ts TEXT NOT NULL, action TEXT NOT NULL,
-  entity TEXT NOT NULL, entity_id TEXT, summary TEXT NOT NULL, changes TEXT);
+  entity TEXT NOT NULL, entity_id TEXT, summary TEXT NOT NULL, changes TEXT, msg TEXT);
 CREATE INDEX IF NOT EXISTS history_by_eng ON history(engagement_id, id);
 CREATE TABLE IF NOT EXISTS deliverables (
   id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL REFERENCES engagements(id) ON DELETE CASCADE,
@@ -62,6 +64,10 @@ def connect():
     try:
         db.execute("PRAGMA foreign_keys=ON")
         db.executescript(SCHEMA)
+        try:  # databases created before history messages were translatable
+            db.execute("ALTER TABLE history ADD COLUMN msg TEXT")
+        except sqlite3.OperationalError:
+            pass
         with db:
             yield db
     finally:
@@ -76,6 +82,18 @@ def loads(text, default=None):
     return json.loads(text) if text else default
 
 
-def log(db, engagement_id, action, entity, entity_id, summary, changes=None):
-    db.execute("INSERT INTO history(engagement_id,ts,action,entity,entity_id,summary,changes) VALUES(?,?,?,?,?,?,?)",
-               (engagement_id, now(), action, entity, entity_id, summary, dumps(changes) if changes else None))
+def render_msg(key, params, lang=None):
+    """A history message in the asked language; item kinds and comment statuses are translated too."""
+    params = dict(params or {})
+    if "kind" in params:
+        params["kind"] = texts.tr("kind." + params["kind"], lang)
+    if "status" in params:
+        params["status"] = texts.tr("status." + params["status"], lang)
+    return texts.tr(key, lang, **params)
+
+
+def log(db, engagement_id, action, entity, entity_id, key, params=None, changes=None):
+    """Write one history line. ``key`` + ``params`` are kept so the timeline can be shown in either language."""
+    db.execute("INSERT INTO history(engagement_id,ts,action,entity,entity_id,summary,changes,msg) VALUES(?,?,?,?,?,?,?,?)",
+               (engagement_id, now(), action, entity, entity_id, render_msg(key, params, "en"), dumps(changes) if changes else None,
+                dumps({"key": key, "params": params or {}})))

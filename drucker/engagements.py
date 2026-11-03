@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
-from . import db
-from .errors import DruckerError, NotFound
+from . import db, texts
+from .errors import DruckerError, err, not_found
 from .models import ITEM_KINDS, ITEM_MODELS, EngagementIn
 
 DEFAULT_DENYLIST = ["Faustus", "Hoard", "Drucker", "Atlas", "Ledger", "MCP", "Copilot", "Claude", "Codex"]
@@ -18,7 +18,8 @@ def _validate(model, data):
     except ValidationError as error:
         first = error.errors()[0]
         where = ".".join(str(p) for p in first["loc"])
-        raise DruckerError(f"{where}: {first['msg']}" if where else first["msg"]) from None
+        msg = texts.tr("e.budget") if first["type"] == "value_error" and "budget_min" in first["msg"] else texts.pyd(first["type"]) if texts.cur() == "es" else first["msg"]
+        raise DruckerError(f"{where}: {msg}" if where else msg) from None
 
 
 def _row_eng(row):
@@ -32,7 +33,7 @@ def _row_eng(row):
 def _require(conn, engagement_id):
     row = conn.execute("SELECT * FROM engagements WHERE id=?", (engagement_id,)).fetchone()
     if not row:
-        raise NotFound(f"Engagement {engagement_id!r} not found")
+        raise not_found("e.not_found_eng", id=engagement_id)
     return row
 
 
@@ -84,7 +85,7 @@ def save(data):
     engagement_id = data.pop("id", None)
     nested = data.pop("items", None) or {}
     if not isinstance(nested, dict):
-        raise DruckerError("items must be an object {kind: [..]}")
+        raise err("e.items_object")
     with db.connect() as conn:
         if engagement_id:
             old = _row_eng(_require(conn, engagement_id))
@@ -99,8 +100,7 @@ def save(data):
                               model["origin"], model["status"], model["currency"], model["budget_min"], model["budget_max"],
                               model["notes"], db.dumps(model["denylist"]) if model["denylist"] is not None else None,
                               db.now(), engagement_id))
-                db.log(conn, engagement_id, "update", "engagement", engagement_id,
-                       "Engagement updated: " + ", ".join(sorted(changes)), changes)
+                db.log(conn, engagement_id, "update", "engagement", engagement_id, "h.eng_updated", {"fields": ", ".join(sorted(changes))}, changes)
         else:
             model = _validate(EngagementIn, data).model_dump()
             engagement_id = db.new_id()
@@ -110,7 +110,7 @@ def save(data):
                          (engagement_id, model["name"], model["client_name"], db.dumps(model["client_ref"]) if model["client_ref"] else None,
                           model["origin"], model["status"], model["currency"], model["budget_min"], model["budget_max"],
                           model["notes"], db.dumps(model["denylist"]) if model["denylist"] is not None else None, ts, ts))
-            db.log(conn, engagement_id, "create", "engagement", engagement_id, f"Engagement created: {model['name']}")
+            db.log(conn, engagement_id, "create", "engagement", engagement_id, "h.eng_created", {"name": model["name"]})
         for kind, entries in nested.items():
             for entry in entries or []:
                 _save_item(conn, engagement_id, kind, dict(entry))
@@ -131,7 +131,7 @@ def _title(kind, body):
 
 def _save_item(conn, engagement_id, kind, data):
     if kind not in ITEM_MODELS:
-        raise DruckerError(f"Unknown item kind {kind!r}; use one of {', '.join(ITEM_KINDS)}")
+        raise err("e.unknown_kind", kind=kind, kinds=", ".join(ITEM_KINDS))
     _require(conn, engagement_id)
     item_id = data.pop("id", None)
     for noise in ("kind", "created", "updated"):
@@ -139,14 +139,14 @@ def _save_item(conn, engagement_id, kind, data):
     if item_id:
         row = conn.execute("SELECT * FROM items WHERE id=? AND engagement_id=?", (item_id, engagement_id)).fetchone()
         if not row or row["kind"] != kind:
-            raise NotFound(f"{kind} {item_id!r} not found in this engagement")
+            raise not_found("e.not_found_item", kind=texts.tr("kind." + kind), id=item_id)
         old = db.loads(row["body"])
         body = _validate(ITEM_MODELS[kind], {**old, **data}).model_dump()
         changes = _diff(old, body)
         if changes:
             conn.execute("UPDATE items SET body=?,updated=? WHERE id=?", (db.dumps(body), db.now(), item_id))
             conn.execute("UPDATE engagements SET updated=? WHERE id=?", (db.now(), engagement_id))
-            db.log(conn, engagement_id, "update", kind, item_id, f"{kind} updated: {_title(kind, body)}", changes)
+            db.log(conn, engagement_id, "update", kind, item_id, "h.item_updated", {"kind": kind, "title": _title(kind, body)}, changes)
     else:
         body = _validate(ITEM_MODELS[kind], data).model_dump()
         item_id = db.new_id()
@@ -155,7 +155,7 @@ def _save_item(conn, engagement_id, kind, data):
         conn.execute("INSERT INTO items(id,engagement_id,kind,body,seq,created,updated) VALUES(?,?,?,?,?,?,?)",
                      (item_id, engagement_id, kind, db.dumps(body), seq, ts, ts))
         conn.execute("UPDATE engagements SET updated=? WHERE id=?", (ts, engagement_id))
-        db.log(conn, engagement_id, "create", kind, item_id, f"{kind} added: {_title(kind, body)}", body)
+        db.log(conn, engagement_id, "create", kind, item_id, "h.item_added", {"kind": kind, "title": _title(kind, body)}, body)
     return item_id
 
 
@@ -170,20 +170,26 @@ def delete_item(engagement_id, item_id):
     with db.connect() as conn:
         row = conn.execute("SELECT * FROM items WHERE id=? AND engagement_id=?", (item_id, engagement_id)).fetchone()
         if not row:
-            raise NotFound(f"Item {item_id!r} not found in this engagement")
+            raise not_found("e.not_found_item2", id=item_id)
         body = db.loads(row["body"])
         conn.execute("DELETE FROM items WHERE id=?", (item_id,))
         conn.execute("UPDATE engagements SET updated=? WHERE id=?", (db.now(), engagement_id))
-        db.log(conn, engagement_id, "delete", row["kind"], item_id, f"{row['kind']} removed: {_title(row['kind'], body)}", body)
+        db.log(conn, engagement_id, "delete", row["kind"], item_id, "h.item_removed", {"kind": row["kind"], "title": _title(row["kind"], body)}, body)
     return {"deleted": item_id}
 
 
+@texts.localized
 def history(engagement_id, limit=200):
     with db.connect() as conn:
         _require(conn, engagement_id)
         rows = conn.execute("SELECT * FROM history WHERE engagement_id=? ORDER BY id DESC LIMIT ?", (engagement_id, limit)).fetchall()
     return [{"id": r["id"], "ts": r["ts"], "action": r["action"], "entity": r["entity"], "entity_id": r["entity_id"],
-             "summary": r["summary"], "changes": db.loads(r["changes"])} for r in rows]
+             "summary": db.render_msg(*_msg(r)) if r["msg"] else r["summary"], "changes": db.loads(r["changes"])} for r in rows]
+
+
+def _msg(row):
+    m = db.loads(row["msg"])
+    return m["key"], m["params"], texts.cur()
 
 
 # ---- settings (deny-list shared by every engagement unless the engagement has its own)
@@ -196,7 +202,7 @@ def get_settings():
 def set_settings(data):
     words = data.get("denylist")
     if not isinstance(words, list) or not all(isinstance(w, str) for w in words):
-        raise DruckerError("denylist must be a list of strings")
+        raise err("e.denylist_list")
     words = [w.strip() for w in words if w.strip()]
     with db.connect() as conn:
         conn.execute("INSERT INTO settings(key,value) VALUES('denylist',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",

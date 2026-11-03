@@ -38,7 +38,14 @@ El esfuerzo sale de bandas editables y de qué entregables e hitos toca cada ele
 - `format`: formato de salida de entregables existentes. Solo la última etapa. Por defecto 1-4 h por entregable.
 - `pipeline`: cambia cómo se produce el trabajo. Etapa anterior, así que se rehace todo lo posterior. Por defecto 16-40 h más 4-10 h por cada entregable o hito abierto adicional.
 - `quantity`: más de lo mismo, por unidad extra.
-- `content`: trabajo nuevo sin coincidencia cercana.
+- `content`: solo un solapamiento ambiguo con un punto acordado que pide más (por defecto 4-12 h, mínimo forzado a 0).
+- `given`: las horas que indiques en el elemento (`{text, hours}` con un número, `[min,max]` o `{min,max}`) se usan tal cual.
+
+El trabajo nuevo sin nada parecido en el acuerdo («una app móvil para comerciales») no recibe horas: sale como `added`, esfuerzo `unestimated` (necesita especificación), aparte y fuera de los totales, que muestran «+ N puntos sin estimar». Opciones: `specify` (especificar y estimar aparte) o `defer` (aplazar). Una banda por defecto infravaloraría un producto entero.
+
+### Idioma
+
+Todo texto que el servidor escribe para personas (motivos, opciones, notas, avisos de revisión, comprobaciones de paquete, líneas de historial, errores) sale en `lang` (`es` castellano, `en`). Las herramientas y la ruta de propuesta aceptan `lang`; la interfaz envía su idioma en la cabecera `X-Lang` en cada llamada. Sin ninguno, la respuesta es en inglés (las propuestas, en castellano). Los campos de máquina (`class`, `effort.kind`, códigos de opción, ids de comprobación, números) no cambian con el idioma. El historial guarda una clave de mensaje, así que las líneas antiguas se leen en cualquier idioma. No se traduce el texto que viene de los datos del usuario ni los mensajes de validación de la librería de esquemas fuera de los casos comunes.
 
 El resultado es siempre un rango y su motivo. Solo aparece dinero si se da un rango de tarifa por hora. Las bandas son un punto de partida para calibrar, no un presupuesto.
 
@@ -54,11 +61,11 @@ Tablas SQLite: `engagements`, `items` (alcance, hito, material, decisión, cobro
 
 ## Pruebas
 
-`python -m pytest -q`: 64 pruebas. Cubren altas y cambios con historial, clases y rangos de alcance, etiquetado de propuestas y lista prohibida, detección de comentarios obsoletos, verificación de paquetes (archivo ausente, hash distinto, PNG/PDF/GLB/STL/JSON/CSV/ZIP rotos, fuente no autorizada), zip con bytes idénticos a igual entrada, REST, la ruta de agente con token y el puente stdio contra un servidor real.
+`python -m pytest -q`: 73 pruebas. Cubren altas y cambios con historial, clases y rangos de alcance, etiquetado de propuestas y lista prohibida, detección de comentarios obsoletos, verificación de paquetes (archivo ausente, hash distinto, PNG/PDF/GLB/STL/JSON/CSV/ZIP rotos, fuente no autorizada), zip con bytes idénticos a igual entrada, REST, la ruta de agente con token y el puente stdio contra un servidor real.
 
 ## Límites
 
-- Las horas son rangos por reglas. No hay modelo: una redacción que las reglas no conocen cae en la banda `content` por defecto o en `ambiguous`.
+- Las horas son rangos por reglas. No hay modelo: una redacción que las reglas no conocen sale `ambiguous` o, si nada del acuerdo se le parece, como punto sin estimar.
 - Las comprobaciones de paquete prueban que un archivo abre y coincide con su hash, no que esté bien hecho. Las URL remotas y los punteros de Atlas no se pueden verificar; un paquete que los lista no queda listo hasta indicar una ruta local.
 - La validación de formatos es estructural y básica (zip, JSON, CSV, PDF, PNG, GLB, STL), no un analizador completo.
 - La interfaz no tiene autenticación (app local en 127.0.0.1, como el resto de la familia).
