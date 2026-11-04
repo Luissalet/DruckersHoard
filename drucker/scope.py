@@ -4,6 +4,7 @@ Every request item is classified added / removed / ambiguous / already_included 
 range of hours with the reason; money appears only when the caller supplies an hourly-rate range."""
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from difflib import SequenceMatcher
@@ -28,6 +29,7 @@ DEFAULT_BANDS = {  # hours; a starting point to calibrate, never a quote
     "clarify": {"base": [0, 0]},
 }  # "content" applies only to an ambiguous overlap with an agreed item; a new item with no match is never banded
 INCLUDE_LIMIT_HOURS = 4
+MAX_BAND_HOURS = 100000  # a saved band above this is a typo, and 1e999 (infinity) cannot be stored
 
 
 def validate_bands(bands) -> dict:
@@ -40,7 +42,7 @@ def validate_bands(bands) -> dict:
             raise err("e.bands")
         for part, pair in parts.items():
             ok = (part in DEFAULT_BANDS[fam] and isinstance(pair, (list, tuple)) and len(pair) == 2
-                  and all(isinstance(x, (int, float)) and not isinstance(x, bool) and x >= 0 for x in pair) and pair[0] <= pair[1])
+                  and all(isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and 0 <= x <= MAX_BAND_HOURS for x in pair) and pair[0] <= pair[1])
             if not ok:
                 raise err("e.bands")
             out.setdefault(fam, {})[part] = [pair[0], pair[1]]

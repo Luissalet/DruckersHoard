@@ -62,3 +62,11 @@ def test_rest_and_mcp_tool_read_and_write_bands():
     assert read["bands"]["format"]["per_deliverable"] == [2, 6]
     reset = tools.HANDLERS["drucker_settings"]({"bands": {}})
     assert reset["bands_custom"] == {} and "bands" in next(s for s in tools.SPECS if s[0] == "drucker_settings")[2]
+
+
+def test_bands_reject_infinite_and_absurd_hours():
+    # a JSON 1e999 parses to infinity: it passed the min <= max check and broke the save with a server error
+    for bad in (float("inf"), float("nan"), 1e308, 100001):
+        with pytest.raises(DruckerError):
+            scope.validate_bands({"pipeline": {"base": [1, bad]}})
+    assert scope.validate_bands({"pipeline": {"base": [0, 100000]}}) == {"pipeline": {"base": [0, 100000]}}
