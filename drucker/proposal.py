@@ -1,20 +1,22 @@
 """Proposal preparer: a draft from the stored engagement where every sentence is tagged verified, assumption or question."""
 from __future__ import annotations
 
+import hashlib
 import html
 import re
 
-from . import engagements, texts
+from . import db, docx_out, engagements, texts
 from .errors import err
 from .scope import fold
+from .templates import TEMPLATES, TYPES
 
 TAGS = ("verified", "assumption", "question")
 
 T = {
     "en": {
         "title": "Proposal", "legend": "Draft for review. Each line is tagged: verified (backed by a stored fact), assumption, or question.",
-        "sections": {"problem": "Problem", "scope": "Scope", "milestones": "Milestones", "deliverables": "Deliverables", "decisions": "Agreed decisions",
-                     "budget": "Budget", "assumptions": "Assumptions", "questions": "Open questions"},
+        "sections": {"problem": "Problem", "scope": "Scope", "method": "Method and sources", "milestones": "Milestones", "deliverables": "Deliverables",
+                     "decisions": "Agreed decisions", "budget": "Budget", "terms": "Terms", "assumptions": "Assumptions", "questions": "Open questions"},
         "client": "Client: {v}.", "no_client": "Who is the client contact for this proposal?", "no_problem": "What problem should the client's work solve?",
         "scope_agreed": "{t}.", "scope_prop": "Proposed, not yet agreed: {t}.", "no_scope": "Which items are in the scope?",
         "ms_dated": "{t}: {d}.", "ms_undated": "The date for milestone \"{t}\" is not set.", "no_ms": "What milestones and dates apply?",
@@ -24,8 +26,8 @@ T = {
         "no_budget": "What budget range does the client have in mind?"},
     "es": {
         "title": "Propuesta", "legend": "Borrador para revisar. Cada línea lleva una etiqueta: verificado (respaldado por un dato guardado), supuesto o pregunta.",
-        "sections": {"problem": "Problema", "scope": "Alcance", "milestones": "Hitos", "deliverables": "Entregables", "decisions": "Decisiones acordadas",
-                     "budget": "Presupuesto", "assumptions": "Supuestos", "questions": "Preguntas abiertas"},
+        "sections": {"problem": "Problema", "scope": "Alcance", "method": "Método y fuentes", "milestones": "Hitos", "deliverables": "Entregables",
+                     "decisions": "Decisiones acordadas", "budget": "Presupuesto", "terms": "Condiciones", "assumptions": "Supuestos", "questions": "Preguntas abiertas"},
         "client": "Cliente: {v}.", "no_client": "¿Quién es el contacto del cliente para esta propuesta?", "no_problem": "¿Qué problema debe resolver el trabajo del cliente?",
         "scope_agreed": "{t}.", "scope_prop": "Propuesto, aún no acordado: {t}.", "no_scope": "¿Qué elementos entran en el alcance?",
         "ms_dated": "{t}: {d}.", "ms_undated": "La fecha del hito «{t}» no está fijada.", "no_ms": "¿Qué hitos y fechas se aplican?",
@@ -42,12 +44,16 @@ def _num(v):
     return f"{v:,.0f}".replace(",", " ") if float(v).is_integer() else f"{v:,.2f}".replace(",", " ")
 
 
-def build(engagement_id, lang=None, denylist=None):
+def build(engagement_id, lang=None, denylist=None, template=None):
     lang = lang or texts.explicit() or "es"
     if lang not in T:
         raise err("e.lang")
     t = T[lang]
     e = engagements.get(engagement_id)
+    kind = template or e.get("kind") or "general"
+    if kind not in TYPES:
+        raise err("e.template", kinds=", ".join(TYPES))
+    tpl = TEMPLATES[lang][kind]
     sentences = []
 
     def add(section, tag, text, kind=None, ref=None, field=None):
@@ -73,6 +79,8 @@ def build(engagement_id, lang=None, denylist=None):
             add("scope", "assumption", t["scope_prop"].format(t=text.rstrip(".")), "scope", i["id"], "title")
     if not scope:
         add("scope", "question", t["no_scope"])
+    for line in tpl["method"]:
+        add("method", "assumption", line)
     for m in e["items"]["milestone"]:
         if m["due"]:
             add("milestones", "verified", t["ms_dated"].format(t=m["title"].rstrip("."), d=m["due"]), "milestone", m["id"], "due")
@@ -97,16 +105,22 @@ def build(engagement_id, lang=None, denylist=None):
         add("budget", "question", t["no_budget"])
     if lo is not None or hi is not None:
         add("budget", "assumption", t["budget_assume"])
+    for line in tpl["terms"]:
+        add("terms", "assumption", line)
     for a in e["items"]["assumption"]:
         add("assumptions", "assumption", a["text"].rstrip(".") + ".", "assumption", a["id"], "text")
     for q in e["items"]["question"]:
         if q["status"] == "open":
             add("questions", "question", q["text"].rstrip("?").strip() + "?" if not q["text"].rstrip().endswith("?") else q["text"].strip(), "question", q["id"], "text")
+    asked = {fold(s["text"]) for s in sentences if s["tag"] == "question"}
+    for line in tpl["questions"]:
+        if fold(line) not in asked:
+            add("questions", "question", line)
     words = denylist if denylist is not None else (e["denylist"] if e["denylist"] is not None else engagements.get_settings()["denylist"])
     title = f"{t['title']}: {e['name']}"
     violations = check_denylist(sentences, title, words)
     counts = {tag: sum(1 for s in sentences if s["tag"] == tag) for tag in TAGS}
-    return {"engagement_id": e["id"], "lang": lang, "title": title, "legend": t["legend"], "sections": t["sections"],
+    return {"engagement_id": e["id"], "lang": lang, "template": kind, "title": title, "legend": t["legend"], "sections": t["sections"],
             "sentences": sentences, "counts": counts, "denylist": words, "violations": violations,
             "client_ready": not violations}
 
@@ -125,13 +139,17 @@ def check_denylist(sentences, title, words):
     return out
 
 
-def render(draft, fmt):
-    if fmt not in ("md", "html"):
-        raise err("e.format_md_html")
+def _refuse(draft):
     if draft["violations"]:
         terms = sorted({v["term"] for v in draft["violations"]})
         with texts.using(draft["lang"]):
             raise err("e.refused_names", terms=", ".join(terms), extra={"violations": draft["violations"]})
+
+
+def render(draft, fmt):
+    if fmt not in ("md", "html"):
+        raise err("e.format_md_html")
+    _refuse(draft)
     labels = TAG_LABEL[draft["lang"]]
     by = {}
     for s in draft["sentences"]:
@@ -155,8 +173,27 @@ def render(draft, fmt):
     return "".join(parts) + "</body></html>\n"
 
 
-def proposal(engagement_id, fmt="json", lang=None, denylist=None):
-    draft = build(engagement_id, lang, denylist)
+def docx_file(draft):
+    """The draft as a Word document (bytes). Refused like the other exports while it holds a deny-listed name."""
+    _refuse(draft)
+    labels = TAG_LABEL[draft["lang"]]
+    by = {}
+    for s in draft["sentences"]:
+        by.setdefault(s["section"], []).append(s)
+    sections = [(draft["sections"][k], [(s["text"], labels[s["tag"]]) for s in by[k]]) for k in draft["sections"] if k in by]
+    return docx_out.build(draft["title"], draft["legend"], sections)
+
+
+def proposal(engagement_id, fmt="json", lang=None, denylist=None, template=None):
+    draft = build(engagement_id, lang, denylist, template)
     if fmt == "json":
         return draft
-    return {"format": fmt, "title": draft["title"], "content": render(draft, fmt), "counts": draft["counts"]}
+    if fmt == "docx":
+        data = docx_file(draft)
+        folder = db.data_dir() / "proposals" / engagement_id
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / ("propuesta.docx" if draft["lang"] == "es" else "proposal.docx")
+        path.write_bytes(data)
+        return {"format": "docx", "title": draft["title"], "path": str(path), "size": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(), "counts": draft["counts"], "template": draft["template"]}
+    return {"format": fmt, "title": draft["title"], "content": render(draft, fmt), "counts": draft["counts"], "template": draft["template"]}
