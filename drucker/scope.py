@@ -5,6 +5,7 @@ range of hours with the reason; money appears only when the caller supplies an h
 from __future__ import annotations
 
 import math
+import json
 import re
 import unicodedata
 from difflib import SequenceMatcher
@@ -70,17 +71,69 @@ def stem(word: str) -> str:
     return word
 
 
-def tokens(text: str) -> list[str]:
-    return [stem(w) for w in fold(text).split() if w not in STOP or w in NEGATIONS]
+MAX_SYNONYM_GROUPS = 100
+MAX_GROUP_WORDS = 30
+
+
+def validate_synonyms(groups) -> list[list[str]]:
+    """Groups of words or phrases that mean the same for this client ("informe", "reporte"). Each group needs two or more
+    different entries once accents and case are folded; the first entry is the one the others are read as."""
+    if groups in (None, ""):
+        return []
+    if not isinstance(groups, (list, tuple)) or len(groups) > MAX_SYNONYM_GROUPS:
+        raise err("e.synonyms")
+    out = []
+    for group in groups:
+        if not isinstance(group, (list, tuple)) or len(group) > MAX_GROUP_WORDS or not all(isinstance(w, str) for w in group):
+            raise err("e.synonyms")
+        words, seen = [], set()
+        for w in group:
+            w = re.sub(r"\s+", " ", w).strip()
+            f = fold(w)
+            if not f:
+                continue
+            if len(w) > 60:
+                raise err("e.synonyms")
+            if f not in seen:
+                seen.add(f)
+                words.append(w)
+        if len(words) < 2:
+            raise err("e.synonyms")
+        out.append(words)
+    return out
+
+
+def synonym_rules(groups) -> list:
+    """Compiled replacements (longest phrase first): every member of a group is read as the group's first entry."""
+    rules = []
+    for group in validate_synonyms(groups):
+        head = fold(group[0])
+        for member in group[1:]:
+            m = fold(member)
+            if m != head:
+                rules.append((len(m), re.compile(r"(?<![a-z0-9])" + re.escape(m) + r"(?:e?s)?(?![a-z0-9])"), head))
+    rules.sort(key=lambda r: -r[0])
+    return [(rx, head) for _, rx, head in rules]
+
+
+def _read(text: str, rules=None) -> str:
+    text = fold(text)
+    for rx, head in rules or ():
+        text = rx.sub(head, text)
+    return text
+
+
+def tokens(text: str, rules=None) -> list[str]:
+    return [stem(w) for w in _read(text, rules).split() if w not in STOP or w in NEGATIONS]
 
 
 def numbers(text: str) -> set[str]:
     return set(re.findall(r"\d+", fold(text)))
 
 
-def similarity(a: str, b: str) -> tuple[float, float]:
+def similarity(a: str, b: str, rules=None) -> tuple[float, float]:
     """(score, containment of a in b). score blends token overlap with ordered sequence similarity."""
-    ta, tb = tokens(a), tokens(b)
+    ta, tb = tokens(a, rules), tokens(b, rules)
     sa, sb = set(ta), set(tb)
     if not sa or not sb:
         return 0.0, 0.0
@@ -93,6 +146,13 @@ def split_items(source) -> list[dict]:
     """Text (bullets/lines/sentences) or a list of strings / {id,text,touches}."""
     if source in (None, "", []):
         return []
+    if isinstance(source, str) and source.lstrip().startswith("[") and source.rstrip().endswith("]"):
+        try:  # a list that arrived as its JSON text
+            decoded = json.loads(source)
+        except ValueError:
+            decoded = None
+        if isinstance(decoded, list):
+            return split_items(decoded)
     if isinstance(source, str):
         parts = []
         for line in source.splitlines():
@@ -138,14 +198,14 @@ def _has(text, words):
     return any((" " + w) in f for w in words)
 
 
-def _touched(item, context):
+def _touched(item, context, rules=None):
     touches = item.get("touches") or {}
     dels, mils = list(touches.get("deliverables") or []), list(touches.get("milestones") or [])
-    t = set(tokens(item["text"]))
+    t = set(tokens(item["text"], rules))
     for key, names, out in (("deliverables", context.get("deliverables") or [], dels), ("milestones", context.get("milestones") or [], mils)):
         for entry in names:
             name = entry if isinstance(entry, str) else entry.get("name") or entry.get("title") or ""
-            nt = set(tokens(name))
+            nt = set(tokens(name, rules))
             shared = nt & t
             if nt and name not in out and (len(shared) / len(nt) >= 0.6 or (len(shared) / len(nt) >= 0.33 and any(len(w) >= 5 for w in shared))):
                 out.append(name)
@@ -167,12 +227,12 @@ def _touch(dels):
     return texts.tr("s.touch", v=", ".join(dels)) if dels else ""
 
 
-def estimate(item, matched, kind_hint, context, bands, rate):
+def estimate(item, matched, kind_hint, context, bands, rate, rules=None):
     """Effort range with the reason, or ``None`` when the item is new work that cannot honestly get hours.
 
     Banded ranges only for a recognisable change of an agreed item (quantity, format, pipeline rework, or an ambiguous
     overlap) or when the caller gives the hours. ``kind_hint`` overrides keyword classification (e.g. quantity)."""
-    dels, mils = _touched(item, context)
+    dels, mils = _touched(item, context, rules)
     text = item["text"]
     open_ms = [m for m in mils if _milestone_open(m, context)]
     if item.get("hours"):
@@ -246,10 +306,11 @@ def alternatives(change_class, eff, rate_currency=""):
 
 
 @texts.localized
-def compare(initial=None, agreement=None, request=None, request_mode="delta", context=None, bands=None, hourly_rate=None) -> dict:
+def compare(initial=None, agreement=None, request=None, request_mode="delta", context=None, bands=None, hourly_rate=None, synonyms=None) -> dict:
     """``request_mode``: delta (the request lists only new or changed asks) or full (it restates the whole scope, so
     agreed items it leaves out count as removed). ``context``: {deliverables:[..], milestones:[..]} used to find which
-    deliverables/milestones an item touches. ``hourly_rate``: {min,max,currency} optional."""
+    deliverables/milestones an item touches. ``hourly_rate``: {min,max,currency} optional. ``synonyms``: groups of words
+    that mean the same for this client; a match that only exists thanks to them says so (``match.via_synonyms``)."""
     if request_mode not in ("delta", "full"):
         raise err("e.request_mode")
     ini, agr, req = split_items(initial), split_items(agreement), split_items(request)
@@ -265,10 +326,13 @@ def compare(initial=None, agreement=None, request=None, request_mode="delta", co
             raise err("e.rate")
         rate = hourly_rate
     baseline = agr or ini
+    groups = validate_synonyms(synonyms)
+    rules = synonym_rules(groups)
     items = []
     for r in req:
-        scored = sorted(((*similarity(r["text"], b["text"]), b) for b in baseline), key=lambda s: (-s[0], -s[1]))
+        scored = sorted(((*similarity(r["text"], b["text"], rules), b) for b in baseline), key=lambda s: (-s[0], -s[1]))
         score, contain, best = scored[0] if scored else (0.0, 0.0, None)
+        plain = max((similarity(r["text"], b["text"]) for b in baseline), default=(0.0, 0.0)) if rules else (score, contain)
         cls, reason, hint = None, "", None
         nr, nb = (numbers(r["text"]), numbers(best["text"])) if best else (set(), set())
         neg = best and (bool(NEGATIONS & set(fold(r["text"]).split())) != bool(NEGATIONS & set(fold(best["text"]).split())))
@@ -279,7 +343,7 @@ def compare(initial=None, agreement=None, request=None, request_mode="delta", co
             reason = texts.tr("s.qty", old=", ".join(sorted(nb)), new=", ".join(sorted(nr)))
         elif best and score >= 0.5 and neg:
             cls, reason = "ambiguous", texts.tr("s.negation")
-        elif best and contain >= 0.8 and len(set(tokens(r["text"]))) >= 2 and score >= 0.4:
+        elif best and contain >= 0.8 and len(set(tokens(r["text"], rules))) >= 2 and score >= 0.4:
             cls, reason = "already_included", texts.tr("s.included")
         elif best and (score >= 0.4 or contain >= 0.5):
             cls, reason = "ambiguous", texts.tr("s.overlap")
@@ -288,12 +352,15 @@ def compare(initial=None, agreement=None, request=None, request_mode="delta", co
             best = None if score < 0.2 else best
         entry = {"id": r["id"], "text": r["text"], "class": cls, "reason": reason, "estimated": True,
                  "match": {"id": best["id"], "text": best["text"], "score": score, "containment": contain} if best else None}
+        if entry["match"] and rules and (score > plain[0] + 0.05 or contain > plain[1] + 0.05):
+            entry["match"]["via_synonyms"] = True
+            entry["reason"] += texts.tr("s.via_syn")
         if cls == "added" and ini and agr:
-            dropped = max(((*similarity(r["text"], i["text"]), i) for i in ini), key=lambda s: s[0])
+            dropped = max(((*similarity(r["text"], i["text"], rules), i) for i in ini), key=lambda s: s[0])
             if dropped[0] >= 0.5:
                 entry["note"] = texts.tr("s.dropped", text=dropped[2]["text"])
         if cls in ("added", "ambiguous"):
-            eff = estimate(r, best if cls == "ambiguous" else None, hint, context, merged, rate)
+            eff = estimate(r, best if cls == "ambiguous" else None, hint, context, merged, rate, rules)
             if eff["kind"] == "unestimated":
                 entry["estimated"] = False
             elif cls == "ambiguous" and eff["kind"] != "given":
@@ -328,4 +395,4 @@ def compare(initial=None, agreement=None, request=None, request_mode="delta", co
             "totals": {"hours": _range(firm_lo, firm + amb_hi), "certain_hours": _range(firm_lo, firm), "uncertain_hours_max": round(amb_hi, 1),
                        "unestimated_items": sum(1 for i in items if i["estimated"] is False)},
             "baseline": "agreement" if agr else "initial request", "request_mode": request_mode, "lang": texts.cur(), "bands": merged,
-            "method": texts.tr("s.method")}
+            "synonyms": groups, "method": texts.tr("s.method")}

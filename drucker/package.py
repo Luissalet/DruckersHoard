@@ -1,85 +1,17 @@
 """Reproducible delivery package: verify the parts, then write a manifest and a zip. Not ready if any check fails."""
 from __future__ import annotations
 
-import csv
 import io
 import json
 import re
-import struct
 import zipfile
 from pathlib import Path
 
-from . import db, review, texts
+from . import db, links, review, texts
 from .errors import err, not_found
+from .formats import FORMATS, validate_format  # noqa: F401 - validate_format stays importable from here
 
 FIXED_TIME = (2020, 1, 1, 0, 0, 0)
-FORMATS = {".zip": "zip", ".json": "json", ".csv": "csv", ".pdf": "pdf", ".png": "png", ".glb": "glb", ".stl": "stl"}
-
-
-# ---- basic per-format validation: "does it open / re-import", not "is it good"
-def validate_format(path: Path, fmt: str | None = None) -> tuple[bool | None, str]:
-    """(True, detail) valid, (False, reason) broken, (None, note) no validator for this format."""
-    fmt = fmt or FORMATS.get(path.suffix.lower())
-    try:
-        data = path.read_bytes()
-    except OSError as error:
-        return False, texts.tr("v.cannot_read", why=error.strerror or error)
-    if fmt is None:
-        return None, texts.tr("v.no_validator")
-    if not data:
-        return False, texts.tr("v.empty")
-    try:
-        if fmt == "zip":
-            with zipfile.ZipFile(io.BytesIO(data)) as z:
-                bad = z.testzip()
-                if bad:
-                    return False, texts.tr("v.zip_corrupt", name=bad)
-                return (True, texts.tr("v.zip_members", n=len(z.namelist()))) if z.namelist() else (False, texts.tr("v.zip_empty"))
-        if fmt == "json":
-            json.loads(data.decode("utf-8-sig"))
-            return True, texts.tr("v.json_ok")
-        if fmt == "csv":
-            rows = list(csv.reader(io.StringIO(data.decode("utf-8-sig"))))
-            if len(rows) < 1 or not rows[0]:
-                return False, texts.tr("v.csv_head")
-            width = len(rows[0])
-            if any(len(r) != width for r in rows if r):
-                return False, texts.tr("v.csv_width")
-            return True, texts.tr("v.csv_ok", rows=len(rows) - 1, cols=width)
-        if fmt == "pdf":
-            if not data.startswith(b"%PDF-"):
-                return False, texts.tr("v.pdf_head")
-            return (True, texts.tr("v.pdf_ok")) if b"%%EOF" in data[-2048:] else (False, texts.tr("v.pdf_trunc"))
-        if fmt == "png":
-            if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
-                return False, texts.tr("v.png_bad")
-            w, h = struct.unpack(">II", data[16:24])
-            if not (w and h):
-                return False, texts.tr("v.png_zero")
-            return (True, f"{w}x{h}") if data[-12:-8] == b"\x00\x00\x00\x00" and data[-8:-4] == b"IEND" else (False, texts.tr("v.png_trunc"))
-        if fmt == "glb":
-            if data[:4] != b"glTF" or len(data) < 20:
-                return False, texts.tr("v.glb_magic")
-            version, length = struct.unpack("<II", data[4:12])
-            if version != 2 or length != len(data):
-                return False, texts.tr("v.glb_header", v=version, len=length, size=len(data))
-            clen, ctype = struct.unpack("<II", data[12:20])
-            if ctype != 0x4E4F534A:
-                return False, texts.tr("v.glb_chunk")
-            json.loads(data[20:20 + clen].decode("utf-8"))
-            return True, texts.tr("v.glb_ok")
-        if fmt == "stl":
-            head = data[:80].lstrip().lower()
-            if head.startswith(b"solid") and b"endsolid" in data[-200:].lower() and b"facet" in data:
-                return True, texts.tr("v.stl_ascii")
-            if len(data) >= 84:
-                n = struct.unpack("<I", data[80:84])[0]
-                if n > 0 and len(data) == 84 + 50 * n:
-                    return True, texts.tr("v.stl_bin", n=n)
-            return False, texts.tr("v.stl_bad")
-    except (ValueError, UnicodeDecodeError, zipfile.BadZipFile, struct.error, csv.Error) as error:
-        return False, texts.tr("v.open_fail", fmt=fmt, why=error)
-    return None, texts.tr("v.no_validator_short")
 
 
 def _entry(raw, role):
@@ -92,13 +24,53 @@ def _entry(raw, role):
     if isinstance(ref, dict):
         ref = ref.get("ref")
     ref = str(ref or "").strip()
+    pointer = links.atlas_id(raw) if raw.get("atlas") not in (None, "", {}) else ""
+    if not pointer and re.match(r"^(hoard://atlas/|atlas:)", ref, re.I):
+        pointer, ref = links.ident(ref), ""
+    if pointer and not ref:
+        ref = "hoard://atlas/file/" + pointer
     return {"role": role, "ref": ref, "sha256": (raw.get("sha256") or "").lower() or None, "format": raw.get("format"),
-            "name": raw.get("name")}
+            "name": raw.get("name"), "atlas": pointer or None}
+
+
+def _via_atlas(f, checks):
+    """Ask Atlas for the current path and hash of a pointer. On success the entry points at the live local path; otherwise the
+    recorded local path is used when there is one (the pointer is then reported as unverified) or the entry fails."""
+    live = links.atlas_file(f["atlas"])
+    cid, label = f"atlas:{f['role']}:{f['atlas']}", texts.tr("p.atlas", id=f["atlas"])
+    if live["state"] == "ok":
+        _check(checks, cid, label, True, texts.tr("p.atlas_ok", path=live["path"], rev=(live["sha256"] or "?")[:12]))
+        f.update(ref=live["path"], atlas_sha=live["sha256"])
+        return True
+    recorded = Path(f["ref"]).expanduser() if f["ref"] and not f["ref"].lower().startswith(("http://", "https://", "hoard://")) else None
+    if live["state"] == "unavailable" and recorded is not None and recorded.is_file():
+        _check(checks, cid, label, True, texts.tr("p.atlas_unverified", path=str(recorded)))
+        return True
+    _check(checks, cid, label, False, texts.tr("p.atlas_" + live["state"]) + (f" {live['detail']}" if live.get("detail") else ""))
+    return False
 
 
 def _check(checks, cid, label, ok, detail=""):
     checks.append({"id": cid, "label": label, "ok": ok, "detail": detail})
     return ok
+
+
+def _glb_official(checks, role, ref, path):
+    """The Khronos validator, asked of Vulcan through the hub. It adds a check only when Vulcan answers: errors fail the package,
+    warnings do not. Without Vulcan the structural check above is all there is and the detail of that check says so."""
+    r = links.gltf_check(path)
+    if r["state"] == "unavailable":
+        for c in reversed(checks):
+            if c["id"] == f"format:{role}:{ref}":
+                c["detail"] += " " + texts.tr("p.glb_structural")
+                break
+        return
+    if r["state"] == "ok":
+        _check(checks, f"glb_khronos:{role}:{ref}", texts.tr("p.glb_khronos", name=path.name), True,
+               texts.tr("p.glb_khronos_ok", w=r.get("warnings", 0)))
+    else:
+        _check(checks, f"glb_khronos:{role}:{ref}", texts.tr("p.glb_khronos", name=path.name), False,
+               texts.tr("p.glb_khronos_bad", e=r.get("errors", 0), w=r.get("warnings", 0)) if r["state"] == "invalid" else (r.get("detail") or r["state"]))
 
 
 def verify(spec: dict, version_info: dict | None = None) -> dict:
@@ -112,7 +84,10 @@ def verify(spec: dict, version_info: dict | None = None) -> dict:
         for raw in raws:
             f = _entry(raw, role)
             label = f"{texts.tr('p.role.' + role)}: {f['ref'] or texts.tr('p.empty')}"
-            path = Path(f["ref"]).expanduser() if f["ref"] and not f["ref"].lower().startswith(("http://", "https://")) else None
+            if f["atlas"] and not _via_atlas(f, checks):
+                files.append({**f, "size": None, "actual_sha256": None})
+                continue
+            path = Path(f["ref"]).expanduser() if f["ref"] and not f["ref"].lower().startswith(("http://", "https://", "hoard://")) else None
             if path is None:
                 _check(checks, f"file:{role}:{f['ref']}", label, False, texts.tr("p.not_local"))
                 files.append({**f, "size": None, "actual_sha256": None})
@@ -124,6 +99,9 @@ def verify(spec: dict, version_info: dict | None = None) -> dict:
             digest = review.sha256_file(path)
             files.append({**f, "size": path.stat().st_size, "actual_sha256": digest, "path": path})
             _check(checks, f"file:{role}:{f['ref']}", label, True, texts.tr("p.exists"))
+            if f.get("atlas_sha") and f["atlas_sha"] != digest:
+                _check(checks, f"atlas_rev:{role}:{f['atlas']}", texts.tr("p.atlas_rev", name=path.name), False,
+                       texts.tr("p.atlas_rev_bad", a=f["atlas_sha"][:12], b=digest[:12]))
             if f["sha256"]:
                 _check(checks, f"hash:{role}:{f['ref']}", texts.tr("p.hash", name=path.name), f["sha256"] == digest,
                        texts.tr("p.hash_ok") if f["sha256"] == digest else texts.tr("p.hash_bad", a=f["sha256"][:12], b=digest[:12]))
@@ -131,6 +109,8 @@ def verify(spec: dict, version_info: dict | None = None) -> dict:
                 ok, detail = validate_format(path, f["format"])
                 if ok is not None:
                     _check(checks, f"format:{role}:{f['ref']}", texts.tr("p.opens", name=path.name), ok, detail)
+                if ok and (f["format"] or FORMATS.get(path.suffix.lower())) == "glb":
+                    _glb_official(checks, role, f["ref"], path)
     if version_info and version_info.get("sha256") and version_info.get("path"):
         p = Path(version_info["path"])
         actual = review.sha256_file(p) if p.is_file() else None
@@ -170,8 +150,11 @@ def _manifest(result, ctx):
             n += 1
             arc = f"{f['role']}s/{n}-{base}" if f["role"] != "example" else f"examples/{n}-{base}"
         taken.add(arc)
-        entries.append({"role": f["role"], "name": base, "arcname": arc, "size": f["size"], "sha256": f["actual_sha256"],
-                        "format": f["format"] or FORMATS.get(Path(f["ref"]).suffix.lower()), "source_path": f["ref"]})
+        entry = {"role": f["role"], "name": base, "arcname": arc, "size": f["size"], "sha256": f["actual_sha256"],
+                 "format": f["format"] or FORMATS.get(Path(f["ref"]).suffix.lower()), "source_path": f["ref"]}
+        if f.get("atlas"):
+            entry["atlas"] = f["atlas"]
+        entries.append(entry)
     return {"schema": 1, **ctx, "files": entries, "data_sources": result["data_sources"], "instructions": "INSTRUCTIONS.md",
             "limitations": result["limitations"], "checks": [{"id": c["id"], "ok": c["ok"]} for c in result["checks"]], "ready": result["ready"]}
 
@@ -189,9 +172,28 @@ def build(deliverable_id, version, spec, build_zip=True):
     spec = dict(spec or {})
     ref = db.loads(v["file_ref"])
     path = review.local_path(ref)
+    pointer = links.atlas_id(ref) if ref.get("atlas") else ""
+    if not pointer and ref.get("kind") == "atlas" and ref.get("ref") and not re.search(r"[\\/.]", ref["ref"]):
+        pointer = links.ident(ref["ref"])
+    atlas_check = None
+    if pointer:  # the version is an Atlas pointer: its live path and hash decide, the recorded path is only a fallback
+        probe = {"role": "editable", "ref": str(path or ""), "atlas": pointer}
+        atlas_check = []
+        if _via_atlas(probe, atlas_check):
+            path = Path(probe["ref"]).expanduser() if probe["ref"] else path
+        else:
+            path = None
     if not spec.get("editable_files") and path is not None:
-        spec["editable_files"] = [{"path": str(path), "sha256": v["sha256"]}] if v["sha256"] else [str(path)]
+        entry = {"path": str(path)}
+        if v["sha256"]:
+            entry["sha256"] = v["sha256"]
+        if pointer:
+            entry["atlas"] = pointer
+        spec["editable_files"] = [entry]
     result = verify(spec, {"sha256": v["sha256"], "path": str(path)} if path is not None and v["sha256"] else None)
+    if atlas_check and not atlas_check[0]["ok"]:
+        result["checks"].insert(0, atlas_check[0])
+        result["ready"] = False
     ctx = {"engagement": eng["name"], "deliverable": d["name"], "version": v["n"], "version_sha256": v["sha256"]}
     manifest = _manifest(result, ctx)
     zip_path = None

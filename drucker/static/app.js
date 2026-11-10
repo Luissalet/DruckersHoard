@@ -95,16 +95,18 @@ const KINDS = {
   scope: { cols: ["title", "status", "origin", "deliverable"], fields: [["title", "text"], ["detail", "text"], ["status", "select", ["proposed", "agreed", "done", "dropped"]], ["origin", "select", ["initial", "agreement", "change"]], ["deliverable", "text"]] },
   milestone: { cols: ["title", "due", "status"], fields: [["title", "text"], ["due", "date"], ["status", "select", ["planned", "in_progress", "done", "late", "blocked"]], ["note", "text"]] },
   material: { cols: ["title", "kind", "ref"], fields: [["title", "text"], ["kind", "select", ["path", "url", "atlas", "note"]], ["ref", "text"], ["note", "text"]] },
-  decision: { cols: ["what", "why", "date", "who"], fields: [["what", "text"], ["why", "text"], ["date", "date"], ["who", "text"]] },
+  decision: { cols: ["what", "option", "hours", "date", "who"], fields: [["what", "text"], ["why", "text"], ["date", "date"], ["who", "text"]] },
+  effort: { cols: ["title", "family", "part", "hours", "units"], fields: [["title", "text"], ["family", "select", ["format", "content", "pipeline", "quantity"]], ["part", "select", ["per_deliverable", "base", "per_extra", "per_unit"]], ["hours", "number"], ["units", "number"], ["note", "text"]] },
   payment: { cols: ["title", "kind", "amount", "status", "date", "source"], fields: [["title", "text"], ["kind", "select", ["invoice", "payment"]], ["amount", "number"], ["currency", "text"], ["status", "select", ["planned", "issued", "paid", "overdue"]], ["date", "date"], ["ledger_id", "text"]] },
 };
-const FIELD_LABEL = { ledger_id: "ledger_ref", origin: "origin_f" };
+const FIELD_LABEL = { ledger_id: "ledger_ref", origin: "origin_f", hours: "hours_f", part: "part_f", family: "family_f", option: "option_f", units: "units_f" };
 let tab = "scope";
 
 async function fileView(id) {
   ctx.engagement = id;
   const e = await api("/api/engagements/" + id);
-  const tabs = ["scope", "milestone", "material", "decision", "deliverables", "payment", "history"];
+  const tabs = ["scope", "milestone", "material", "decision", "effort", "deliverables", "payment", "changes", "refs", "history"];
+  const types = (await api("/api/templates")).templates;
   main.innerHTML = `<p><a href="#/encargos">← ${esc(t("back"))}</a></p><h1>${esc(e.name)}</h1><p class="intro">${esc(t("people_note"))}</p>
   <form id="head" class="grid">
     <label>${esc(t("name"))}<input name="name" value="${esc(e.name)}" required /></label>
@@ -114,6 +116,7 @@ async function fileView(id) {
     <label>${esc(t("budget_min"))}<input name="budget_min" type="number" min="0" step="any" value="${e.budget_min ?? ""}" /></label>
     <label>${esc(t("budget_max"))}<input name="budget_max" type="number" min="0" step="any" value="${e.budget_max ?? ""}" /></label>
     <label>${esc(t("currency"))}<input name="currency" value="${esc(e.currency)}" maxlength="3" /></label>
+    <label>${esc(t("eng_type"))}<select name="kind">${types.map((x) => `<option value="${x.type}"${x.type === e.kind ? " selected" : ""}>${esc(x.name)}</option>`).join("")}</select></label>
     <label class="wide">${esc(t("origin"))}<textarea name="origin">${esc(e.origin)}</textarea></label>
     <label class="wide">${esc(t("notes"))}<textarea name="notes">${esc(e.notes)}</textarea></label>
     <div class="bar"><button class="primary">${esc(t("save"))}</button><button type="button" id="del" class="danger">${esc(t("delete"))}</button></div></form>
@@ -121,7 +124,7 @@ async function fileView(id) {
   $("#head").onsubmit = guard(async (ev) => {
     ev.preventDefault();
     const f = new FormData(ev.target), body = {};
-    for (const k of ["name", "client_name", "status", "currency", "origin", "notes"]) body[k] = f.get(k);
+    for (const k of ["name", "client_name", "status", "currency", "origin", "notes", "kind"]) body[k] = f.get(k);
     for (const k of ["budget_min", "budget_max"]) body[k] = f.get(k) === "" ? null : Number(f.get(k));
     const pid = f.get("people_id").trim();
     body.client_ref = pid ? { app: "people", id: pid, label: f.get("client_name") } : null;
@@ -139,6 +142,8 @@ async function pane(e) {
     el.innerHTML = h.length ? `<ul class="plain">${h.map((x) => `<li><span class="muted small">${esc(x.ts.replace("T", " ").slice(0, 16))}</span> <span class="chip">${esc(x.action)}</span> ${esc(x.summary)}</li>`).join("")}</ul>` : `<p class="muted">${esc(t("history_empty"))}</p>`;
     return;
   }
+  if (tab === "changes") return changesPane(e, el);
+  if (tab === "refs") return refsPane(e, el);
   if (tab === "deliverables") {
     el.innerHTML = (e.deliverables.map((d) => `<div class="card"><strong>${esc(d.name)}</strong> <span class="chip">${d.versions.length} ${esc(t("versions"))}</span> ${d.to_deliver ? `<span class="chip ok">${esc(t("to_deliver"))}: v${d.to_deliver}</span>` : ""}
       <div><a href="#/revision" data-open="${d.id}">${esc(t("open_review"))}</a></div></div>`).join("") || `<p class="muted">${esc(t("none"))}</p>`) +
@@ -150,10 +155,12 @@ async function pane(e) {
   const def = KINDS[tab], items = e.items[tab];
   const cell = (it, c) => {
     if (c === "source") return `<span class="chip ${it.source === "ledger" ? "ok" : "warn"}">${esc(t(it.source))}</span>`;
+    if (c === "hours" && it.hours && typeof it.hours === "object") return esc(range(it.hours));
+    if (c === "option") return it.option ? esc(t("o_" + it.option)) : "";
     const v = it[c];
-    return ["status", "origin", "kind"].includes(c) && v ? esc(t("v_" + v)) : esc(v ?? "");
+    return ["status", "origin", "kind", "family", "part"].includes(c) && v ? esc(t("v_" + v)) : esc(v ?? "");
   };
-  el.innerHTML = `<div class="scroll"><table><thead><tr>${def.cols.map((c) => `<th>${esc(t(FIELD_LABEL[c] === "origin_f" ? "origin_f" : c))}</th>`).join("")}<th></th></tr></thead><tbody>
+  el.innerHTML = `<div class="scroll"><table><thead><tr>${def.cols.map((c) => `<th>${esc(t(FIELD_LABEL[c] || c))}</th>`).join("")}<th></th></tr></thead><tbody>
     ${items.map((it) => `<tr>${def.cols.map((c) => `<td class="${c === "amount" ? "num" : ""}">${cell(it, c)}</td>`).join("")}<td class="num"><button class="small" data-edit="${it.id}">${esc(t("edit"))}</button> <button class="small danger" data-rm="${it.id}">×</button></td></tr>`).join("") || `<tr><td colspan="${def.cols.length + 1}" class="muted">${esc(t("none"))}</td></tr>`}</tbody></table></div>
     <form id="itemf" class="grid card"></form>`;
   const form = $("#itemf");
@@ -162,7 +169,7 @@ async function pane(e) {
       const lbl = esc(t(FIELD_LABEL[k] || k));
       const v = k === "ledger_id" ? it.ledger?.id : it[k];
       if (type === "select") return `<label>${lbl}<select name="${k}">${opts(list, v ?? list[0])}</select></label>`;
-      return `<label>${lbl}<input name="${k}" type="${type}"${type === "number" ? ' min="0" step="any"' : ""} value="${esc(v ?? (k === "currency" ? e.currency : ""))}" /></label>`;
+      return `<label>${lbl}<input name="${k}" type="${type}"${type === "number" ? ' min="0" step="any"' : ""} value="${esc(v ?? (k === "currency" ? e.currency : k === "units" ? "1" : ""))}" /></label>`;
     }).join("") + `<div class="bar"><input type="hidden" name="__id" value="${it.id || ""}" /><button class="primary">${esc(it.id ? t("save") : t("add"))}</button>${it.id ? `<button type="button" id="cx">${esc(t("cancel"))}</button>` : ""}</div>`;
     const cx = $("#cx", form); if (cx) cx.onclick = () => draw();
   };
@@ -170,7 +177,8 @@ async function pane(e) {
   form.onsubmit = guard(async (ev) => {
     ev.preventDefault();
     const f = new FormData(form), body = {}, itemId = f.get("__id");
-    for (const [k, v] of f) { if (k === "__id") continue; if (v === "" && !itemId) continue; body[k] = k === "amount" ? (v === "" ? null : Number(v)) : v === "" ? (k === "date" || k === "due" ? null : "") : v; }
+    const NUM = ["amount", "hours", "units"];
+    for (const [k, v] of f) { if (k === "__id") continue; if (v === "" && !itemId) continue; body[k] = NUM.includes(k) ? (v === "" ? null : Number(v)) : v === "" ? (k === "date" || k === "due" ? null : "") : v; }
     if (body.ledger_id !== undefined) { body.ledger = body.ledger_id ? { app: "ledger", id: body.ledger_id } : null; delete body.ledger_id; }
     await api(`/api/engagements/${e.id}/items/${tab}` + (itemId ? "/" + itemId : ""), itemId ? "PUT" : "POST", body);
     toast(t("saved")); await fileView(e.id);
@@ -179,18 +187,50 @@ async function pane(e) {
   $$("[data-rm]").forEach((b) => (b.onclick = guard(async () => { await api(`/api/engagements/${e.id}/items/${b.dataset.rm}`, "DELETE"); await fileView(e.id); })));
 }
 
+// ---------- Órdenes de cambio (decisiones comerciales) y referencias vivas
+async function changesPane(e, el) {
+  const r = await api(`/api/engagements/${e.id}/change-orders`);
+  const row = (x) => `<tr><td>${esc(x.request)}</td><td>${x.hours ? esc(range(x.hours)) : ""}</td><td>${x.money ? `${x.money.min}–${x.money.max} ${esc(x.money.currency)}` : ""}</td><td>${esc(x.date || "")}</td><td>${esc(x.who)}</td><td>${esc(x.why)}</td></tr>`;
+  const head = `<thead><tr><th>${esc(t("request"))}</th><th>${esc(t("hours_f"))}</th><th>${esc(t("amount"))}</th><th>${esc(t("date"))}</th><th>${esc(t("who"))}</th><th>${esc(t("why"))}</th></tr></thead>`;
+  const block = (title, rows) => rows.length ? `<h3>${esc(title)}</h3><div class="scroll"><table>${head}<tbody>${rows.map(row).join("")}</tbody></table></div>` : "";
+  const T = r.totals;
+  el.innerHTML = `<p class="muted small">${esc(t("co_intro"))}</p>
+    <div class="${r.change_orders.length ? "okbox" : "muted"}">${esc(t("co_total"))}: ${T.count} · <span class="range">${range(T.hours)}</span>${Object.entries(T.money || {}).map(([c, m]) => ` · ${m.min}–${m.max} ${esc(c)}`).join("")}${T.money_complete || !T.count ? "" : ` (${esc(t("co_partial"))})`}</div>
+    ${block(t("co_accepted"), r.change_orders)}${block(t("co_included"), r.included)}${block(t("co_deferred"), r.deferred)}${block(t("co_specify"), r.to_specify)}${block(t("co_superseded"), r.superseded)}
+    <div class="bar"><a href="/api/engagements/${e.id}/change-orders.md?lang=${lang}">${esc(t("co_download"))}</a></div>`;
+}
+async function refsPane(e, el) {
+  el.innerHTML = `<p class="muted small">${esc(t("refs_intro"))}</p><p class="muted">${esc(t("loading"))}</p>`;
+  const r = await api(`/api/engagements/${e.id}/refs`);
+  const items = r.items || r.refs || [];
+  const live = (l) => {
+    if (l.state !== "ok") return "";
+    const diff = l.matches_stored === false ? ` <span class="chip warn">${esc(t("refs_differs"))}</span>` : "";
+    if (l.app === "people") return esc(l.name) + diff;
+    if (l.app === "ledger") return `${esc(l.counterparty ?? "")} · ${esc(l.amount ?? "")} · ${esc(l.date ?? "")}` + diff;
+    return `${esc(l.title ?? "")} · <span class="muted small">${esc(l.path ?? "")}</span> · ${esc(shortHash(l.sha256))}`;
+  };
+  const chip = (l) => `<span class="chip ${l.state === "ok" ? "ok" : l.state === "unavailable" ? "warn" : "bad"}">${esc(l.state)}</span>`;
+  el.innerHTML = `<p class="muted small">${esc(t("refs_intro"))}</p><div class="scroll"><table><thead><tr><th>${esc(t("refs_where"))}</th><th>${esc(t("refs_ref"))}</th><th>${esc(t("refs_state"))}</th><th>${esc(t("refs_now"))}</th></tr></thead><tbody>
+    ${items.map((i) => `<tr><td>${esc(i.where?.kind ?? "")}: ${esc(i.where?.title ?? "")}</td><td>${esc(i.ref?.app ?? "")} · ${esc(i.ref?.id ?? "")}</td><td>${chip(i.live)}</td><td>${live(i.live) || `<span class="muted small">${esc(i.live.detail || i.live.hint || "")}</span>`}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">${esc(t("refs_none"))}</td></tr>`}</tbody></table></div>
+    <div class="bar"><button id="refs-reload">${esc(t("refs_reload"))}</button></div>`;
+  $("#refs-reload").onclick = guard(() => refsPane(e, el));
+}
+
 // ---------- Comparar alcance
 async function compareView() {
-  const picker = await engagementPicker(ctx.engagement, () => {});
+  const picker = await engagementPicker(ctx.engagement, () => synonymsEditor().catch(fail));
   main.innerHTML = `<h1>${esc(t("cmp_title"))}</h1><p class="intro">${esc(t("cmp_intro"))}</p>
   <form id="cmp"><div class="bar">${picker.html}<button type="button" id="ex">${esc(t("example"))}</button></div>
   <div class="grid"><label>${esc(t("initial"))}<textarea name="initial"></textarea></label><label>${esc(t("agreement"))}<textarea name="agreement"></textarea></label><label>${esc(t("request"))}<textarea name="request" required></textarea></label></div>
   <div class="bar"><label>${esc(t("mode"))}<select name="request_mode"><option value="delta">${esc(t("m_delta"))}</option><option value="full">${esc(t("m_full"))}</option></select></label>
   <label>${esc(t("rate_min"))}<input name="rate_min" type="number" min="0" step="any" /></label><label>${esc(t("rate_max"))}<input name="rate_max" type="number" min="0" step="any" /></label>
   <label>${esc(t("currency"))}<input name="rate_cur" value="EUR" maxlength="3" size="4" /></label><button class="primary">${esc(t("compare"))}</button></div></form>
-  <details id="bands"><summary>${esc(t("bands"))}</summary><div id="bands-body"></div></details><div id="out"></div>`;
+  <details id="bands"><summary>${esc(t("bands"))}</summary><div id="bands-body"></div></details>
+  <details id="syn"><summary>${esc(t("syn_title"))}</summary><div id="syn-body"></div></details><div id="out"></div>`;
   picker.bind();
   await bandsEditor();
+  await synonymsEditor();
   const form = $("#cmp");
   $("#ex").onclick = guard(async () => { const ex = (await api("/api/example")).scope_compare; form.initial.value = ex.initial.join("\n"); form.agreement.value = ex.agreement.join("\n"); form.request.value = ex.request; form.dataset.ctx = JSON.stringify(ex.context); });
   form.onsubmit = guard(async (ev) => {
@@ -202,6 +242,24 @@ async function compareView() {
     if (form.dataset.ctx) body.context = JSON.parse(form.dataset.ctx);
     if (form.rate_min.value && form.rate_max.value) body.hourly_rate = { min: Number(form.rate_min.value), max: Number(form.rate_max.value), currency: form.rate_cur.value.toUpperCase() };
     renderCompare(await api("/api/scope/compare", "POST", body));
+  });
+}
+// Synonyms for matching: per engagement when one is picked, otherwise the shared list
+async function synonymsEditor() {
+  const mine = ctx.engagement ? await api(`/api/engagements/${ctx.engagement}/synonyms`) : null;
+  const shared = (await api("/api/settings")).synonyms || [];
+  const groups = mine ? mine.groups : shared;
+  const toText = (g) => g.map((x) => x.join(" = ")).join("\n");
+  $("#syn-body").innerHTML = `<p class="muted small">${esc(t("syn_intro"))}</p>
+    <p class="small"><strong>${esc(mine ? t("syn_for_eng") : t("syn_shared"))}</strong></p>
+    <textarea id="syn-text" rows="4" placeholder="informe = reporte">${esc(toText(groups))}</textarea>
+    ${mine && shared.length ? `<p class="muted small">${esc(t("syn_shared"))}: ${esc(shared.map((x) => x.join(" = ")).join(" · "))}</p>` : ""}
+    <div class="bar"><button type="button" id="syn-save">${esc(t("save"))}</button></div>`;
+  $("#syn-save").onclick = guard(async () => {
+    const parsed = lines($("#syn-text").value).map((l) => l.split("=").map((x) => x.trim()).filter(Boolean)).filter((g) => g.length > 1);
+    if (mine) await api(`/api/engagements/${ctx.engagement}/synonyms`, "PUT", { groups: parsed });
+    else await api("/api/settings", "PUT", { synonyms: parsed });
+    toast(t("saved")); await synonymsEditor();
   });
 }
 // Effort bands saved for every comparison (drucker_settings / PUT /api/settings {bands})
@@ -216,7 +274,17 @@ async function bandsEditor() {
   })).join("");
   $("#bands-body").innerHTML = `<p class="muted small">${esc(t("bands_intro"))}</p>
     <table class="bands"><thead><tr><th>${esc(t("band_family"))}</th><th>${esc(t("band_part"))}</th><th>${esc(t("band_min"))}</th><th>${esc(t("band_max"))}</th><th></th></tr></thead><tbody>${rows}</tbody></table>
-    <div class="bar"><button type="button" id="bands-save">${esc(t("save_bands"))}</button><button type="button" id="bands-reset">${esc(t("reset_bands"))}</button></div>`;
+    <div class="bar"><button type="button" id="bands-save">${esc(t("save_bands"))}</button><button type="button" id="bands-reset">${esc(t("reset_bands"))}</button>
+    <button type="button" id="bands-suggest">${esc(t("bands_suggest"))}</button></div><div id="bands-sug"></div>`;
+  $("#bands-suggest").onclick = guard(async () => {
+    const s = await api("/api/bands/suggest");
+    const body = s.parts.map((x) => `<tr><td>${esc(t("bf_" + x.family))} · ${esc(t("bp_" + x.part))}</td><td class="num">${x.n} (${x.engagements})</td><td class="num"><strong>${x.proposed.join("–")}</strong></td><td class="num">${x.current.join("–")}</td>
+      <td class="num">${x.mean} ± ${x.stdev} (${x.min}–${x.max})</td><td><span class="chip ${x.reliability === "ok" ? "ok" : "warn"}">${esc(t("rel_" + x.reliability))}</span> <span class="muted small">${esc(x.note || "")}</span></td></tr>`).join("");
+    $("#bands-sug").innerHTML = s.parts.length ? `<p class="muted small">${esc(s.method)}</p><div class="scroll"><table><thead><tr><th>${esc(t("band_family"))}</th><th>${esc(t("sug_n"))}</th><th>${esc(t("sug_proposed"))}</th><th>${esc(t("sug_current"))}</th><th>${esc(t("sug_spread"))}</th><th></th></tr></thead><tbody>${body}</tbody></table></div>
+      ${Object.keys(s.bands).length ? `<div class="bar"><button type="button" id="sug-apply" class="primary">${esc(t("sug_apply"))}</button></div>` : ""}` : `<p class="muted">${esc(t("sug_none"))}</p>`;
+    const ap = $("#sug-apply");
+    if (ap) ap.onclick = guard(async () => { await api("/api/settings", "PUT", { bands: s.bands }); toast(t("saved")); await bandsEditor(); });
+  });
   $("#bands-save").onclick = guard(async () => {
     const bands = {};
     $$("#bands-body tr[data-fam]").forEach((tr) => {
@@ -234,17 +302,27 @@ function renderCompare(r) {
     <div class="muted small">${esc(i.reason)}${i.note ? " " + esc(i.note) : ""}</div>
     ${i.match ? `<div class="muted small">${esc(t("matches"))}: “${esc(i.match.text)}” (${i.match.score})</div>` : ""}
     ${i.effort && i.effort.kind !== "none" && i.effort.kind !== "removal" ? `<div>${esc(t("effort"))}: <span class="range">${i.effort.hours ? range(i.effort.hours) + money(i.effort.money) : esc(t("unestimated"))}</span> <span class="chip">${esc(t("k_" + i.effort.kind))}</span><div class="muted small">${esc(i.effort.reason)}</div></div>` : ""}
-    ${i.alternatives ? `<div class="small"><strong>${esc(t("options"))}</strong><ul class="plain">${i.alternatives.map((a) => `<li>${a.option === i.recommended ? "★ " : ""}<strong>${esc(a.label || t("o_" + a.option))}</strong>: ${esc(a.summary)}</li>`).join("")}${i.recommended === "clarify" ? `<li>★ <strong>${esc(t("o_clarify"))}</strong></li>` : ""}</ul></div>` : ""}</div>`;
+    ${i.alternatives ? `<div class="small"><strong>${esc(t("options"))}</strong><ul class="plain">${i.alternatives.map((a) => `<li>${a.option === i.recommended ? "★ " : ""}<strong>${esc(a.label || t("o_" + a.option))}</strong>: ${esc(a.summary)}${ctx.engagement ? ` <button type="button" class="small" data-pick="${esc(i.id)}|${esc(a.option)}">${esc(t("pick"))}</button>` : ""}</li>`).join("")}${i.recommended === "clarify" ? `<li>★ <strong>${esc(t("o_clarify"))}</strong></li>` : ""}</ul></div>` : ""}</div>`;
   $("#out").innerHTML = `<h2>${Object.entries(r.counts).map(([k, v]) => `<span class="chip ${k}">${esc(t("c_" + k))} ${v}</span>`).join(" ")}</h2>
     <div class="okbox">${esc(t("total"))}: <span class="range">${range(r.totals.hours)}</span> · ${esc(t("certain"))}: ${range(r.totals.certain_hours)} · ${esc(t("up_to"))} +${r.totals.uncertain_hours_max} ${esc(t("hours"))}${r.totals.unestimated_items ? ` · <strong>+ ${r.totals.unestimated_items} ${esc(t("unestimated_items"))}</strong>` : ""}</div>
-    ${r.items.map(card).join("")}${r.removed.map(card).join("")}<p class="muted small">${esc(r.method)}</p>`;
+    ${ctx.engagement ? "" : `<p class="muted small">${esc(t("pick_needs_eng"))}</p>`}${r.items.map(card).join("")}${r.removed.map(card).join("")}<p class="muted small">${esc(r.method)}</p>`;
+  $$("[data-pick]", $("#out")).forEach((b) => (b.onclick = guard(async () => {
+    const [iid, option] = b.dataset.pick.split("|");
+    const item = r.items.find((x) => x.id === iid), alt = item.alternatives.find((a) => a.option === option);
+    const none = option === "defer" || option === "specify";
+    const out = await api(`/api/engagements/${ctx.engagement}/decide`, "POST", { request: item.text, option, hours: none ? null : (alt.hours || (item.effort && item.effort.hours) || null), money: none ? null : (item.effort && item.effort.money) || null, lang });
+    b.disabled = true; b.textContent = "✓ " + t("picked");
+    toast(out.summary);
+  })));
 }
 
 // ---------- Propuesta
 async function proposalView() {
   const picker = await engagementPicker(ctx.engagement, () => proposalView().catch(fail));
   const st = await api("/api/settings");
+  const tpls = (await api("/api/templates")).templates;
   main.innerHTML = `<h1>${esc(t("prop_title"))}</h1><p class="intro">${esc(t("prop_intro"))}</p><div class="bar">${picker.html}
+  <label>${esc(t("template"))}<select id="ptpl"><option value="">${esc(t("tpl_engagement"))}</option>${tpls.map((x) => `<option value="${x.type}">${esc(x.name)}</option>`).join("")}</select></label>
   <label>${esc(t("lang"))}<select id="plang"><option value="es"${lang === "es" ? " selected" : ""}>Español</option><option value="en"${lang === "en" ? " selected" : ""}>English</option></select></label>
   <button class="primary" id="gen">${esc(t("generate"))}</button></div><div id="out"></div>
   <h2>${esc(t("denylist"))}</h2><div class="bar"><input id="deny" size="50" value="${esc(st.denylist.join(", "))}" /><button id="sd">${esc(t("save_denylist"))}</button></div>`;
@@ -253,12 +331,14 @@ async function proposalView() {
   if (!ctx.engagement) return;
   const run = guard(async () => {
     const l = $("#plang").value;
-    const d = await api(`/api/engagements/${ctx.engagement}/proposal`, "POST", { format: "json", lang: l });
+    const tpl = $("#ptpl").value;
+    const q = `?lang=${l}${tpl ? "&template=" + tpl : ""}`;
+    const d = await api(`/api/engagements/${ctx.engagement}/proposal`, "POST", { format: "json", lang: l, ...(tpl ? { template: tpl } : {}) });
     const secs = Object.keys(d.sections).filter((k) => d.sentences.some((s) => s.section === k));
     $("#out").innerHTML = `<h2>${esc(d.title)}</h2>
       ${d.violations.length ? `<div class="errbox"><strong>${esc(t("not_ready"))}</strong> ${[...new Set(d.violations.map((v) => v.term))].map(esc).join(", ")}<ul class="plain">${d.violations.map((v) => `<li class="small">“${esc(v.text)}”</li>`).join("")}</ul></div>` : `<div class="okbox">${esc(t("client_ready"))}</div>`}
       <div class="bar">${Object.entries(d.counts).map(([k, v]) => `<span class="chip ${k}">${esc(t("t_" + k))} ${v}</span>`).join(" ")}
-      ${d.violations.length ? "" : `<a href="/api/engagements/${ctx.engagement}/proposal.md?lang=${l}">${esc(t("dl_md"))}</a> <a href="/api/engagements/${ctx.engagement}/proposal.html?lang=${l}">${esc(t("dl_html"))}</a>`}</div>
+      ${d.violations.length ? "" : `<a href="/api/engagements/${ctx.engagement}/proposal.md${q}">${esc(t("dl_md"))}</a> <a href="/api/engagements/${ctx.engagement}/proposal.html${q}">${esc(t("dl_html"))}</a> <a href="/api/engagements/${ctx.engagement}/proposal.docx${q}">${esc(t("dl_docx"))}</a>`}</div>
       ${secs.map((k) => `<div class="card"><strong>${esc(d.sections[k])}</strong><ul class="plain">${d.sentences.filter((s) => s.section === k).map((s) => `<li><span class="chip ${s.tag}">${esc(t("t_" + s.tag))}</span> ${esc(s.text)}${s.source ? ` <span class="muted small">(${esc(t("source_lbl"))}: ${esc(s.source.kind)})</span>` : ""}</li>`).join("")}</ul></div>`).join("")}
       <div class="grid"><form id="fa" class="bar"><label>${esc(t("add_assumption"))}<input name="text" required /></label><button>${esc(t("add"))}</button></form>
       <form id="fq" class="bar"><label>${esc(t("add_question"))}<input name="text" required /></label><button>${esc(t("add"))}</button></form></div>`;
@@ -330,7 +410,7 @@ async function packageView() {
   const d = pick.dels.find((x) => x.id === ctx.deliverable);
   if (!d) return;
   $("#pk").innerHTML = `<form id="pf" class="grid"><label>${esc(t("version"))}<select name="version">${d.versions.map((v) => `<option value="${v.n}"${v.n === (d.to_deliver || d.latest) ? " selected" : ""}>v${v.n}</option>`).join("")}</select></label>
-    <label class="wide">${esc(t("editable"))}<textarea name="editable"></textarea></label><label class="wide">${esc(t("exports"))}<textarea name="exports"></textarea></label>
+    <label class="wide">${esc(t("editable"))}<textarea name="editable"></textarea></label><label class="wide">${esc(t("exports"))}<textarea name="exports"></textarea><span class="muted small">${esc(t("pkg_atlas_hint"))}</span></label>
     <label class="wide">${esc(t("examples"))}<textarea name="examples"></textarea></label><label class="wide">${esc(t("sources"))}<textarea name="sources"></textarea></label>
     <label class="wide">${esc(t("instructions"))}<textarea name="instructions"></textarea></label><label class="wide">${esc(t("limitations"))}<textarea name="limitations"></textarea></label>
     <div class="bar"><button type="button" id="vf">${esc(t("verify"))}</button><button class="primary" id="bd">${esc(t("build"))}</button></div></form><div id="res"></div>`;

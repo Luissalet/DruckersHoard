@@ -25,6 +25,7 @@ def _validate(model, data):
 def _row_eng(row):
     out = {k: row[k] for k in ("id", "created", "updated", "name", "client_name", "origin", "status", "currency",
                               "budget_min", "budget_max", "notes")}
+    out["kind"] = row["kind"] or "general"
     out["client_ref"] = db.loads(row["client_ref"])
     out["denylist"] = db.loads(row["denylist"])
     return out
@@ -59,7 +60,8 @@ def _items(conn, engagement_id, kind=None):
     if kind:
         sql += " AND kind=?"
         args.append(kind)
-    return [{"id": r["id"], "kind": r["kind"], **db.loads(r["body"]), "created": r["created"], "updated": r["updated"]}
+    # "_k" is the kind of the row; payments and materials carry their own "kind" field, which must not decide where they are listed
+    return [{"id": r["id"], "kind": r["kind"], **db.loads(r["body"]), "created": r["created"], "updated": r["updated"], "_k": r["kind"]}
             for r in conn.execute(sql + " ORDER BY seq, rowid", args)]
 
 
@@ -68,7 +70,7 @@ def get(engagement_id):
     with db.connect() as conn:
         e = _row_eng(_require(conn, engagement_id))
         items = _items(conn, engagement_id)
-        e["items"] = {k: [i for i in items if i["kind"] == k] for k in ITEM_KINDS}
+        e["items"] = {k: [{n: v for n, v in i.items() if n != "_k"} for i in items if i["_k"] == k] for k in ITEM_KINDS}
         e["deliverables"] = review.deliverables_of(conn, engagement_id)
         e["history_count"] = conn.execute("SELECT COUNT(*) FROM history WHERE engagement_id=?", (engagement_id,)).fetchone()[0]
     return e
@@ -95,21 +97,21 @@ def save(data):
             changes = _diff(old, model)
             if changes:
                 conn.execute("UPDATE engagements SET name=?,client_name=?,client_ref=?,origin=?,status=?,currency=?,"
-                             "budget_min=?,budget_max=?,notes=?,denylist=?,updated=? WHERE id=?",
+                             "budget_min=?,budget_max=?,notes=?,denylist=?,kind=?,updated=? WHERE id=?",
                              (model["name"], model["client_name"], db.dumps(model["client_ref"]) if model["client_ref"] else None,
                               model["origin"], model["status"], model["currency"], model["budget_min"], model["budget_max"],
                               model["notes"], db.dumps(model["denylist"]) if model["denylist"] is not None else None,
-                              db.now(), engagement_id))
+                              model["kind"], db.now(), engagement_id))
                 db.log(conn, engagement_id, "update", "engagement", engagement_id, "h.eng_updated", {"fields": ", ".join(sorted(changes))}, changes)
         else:
             model = _validate(EngagementIn, data).model_dump()
             engagement_id = db.new_id()
             ts = db.now()
             conn.execute("INSERT INTO engagements(id,name,client_name,client_ref,origin,status,currency,budget_min,budget_max,"
-                         "notes,denylist,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         "notes,denylist,kind,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          (engagement_id, model["name"], model["client_name"], db.dumps(model["client_ref"]) if model["client_ref"] else None,
                           model["origin"], model["status"], model["currency"], model["budget_min"], model["budget_max"],
-                          model["notes"], db.dumps(model["denylist"]) if model["denylist"] is not None else None, ts, ts))
+                          model["notes"], db.dumps(model["denylist"]) if model["denylist"] is not None else None, model["kind"], ts, ts))
             db.log(conn, engagement_id, "create", "engagement", engagement_id, "h.eng_created", {"name": model["name"]})
         for kind, entries in nested.items():
             for entry in entries or []:
@@ -122,6 +124,7 @@ def delete(engagement_id):
         _require(conn, engagement_id)
         conn.execute("DELETE FROM engagements WHERE id=?", (engagement_id,))
         conn.execute("DELETE FROM history WHERE engagement_id=?", (engagement_id,))
+        conn.execute("DELETE FROM settings WHERE key=?", ("synonyms:" + engagement_id,))
     return {"deleted": engagement_id}
 
 
@@ -134,7 +137,8 @@ def _save_item(conn, engagement_id, kind, data):
         raise err("e.unknown_kind", kind=kind, kinds=", ".join(ITEM_KINDS))
     _require(conn, engagement_id)
     item_id = data.pop("id", None)
-    for noise in ("kind", "created", "updated"):
+    own_kind = "kind" in ITEM_MODELS[kind].model_fields  # payments and materials have a "kind" of their own (invoice / atlas...)
+    for noise in (("created", "updated") if own_kind else ("kind", "created", "updated")):
         data.pop(noise, None)
     if item_id:
         row = conn.execute("SELECT * FROM items WHERE id=? AND engagement_id=?", (item_id, engagement_id)).fetchone()
@@ -196,17 +200,19 @@ def _msg(row):
 # scope comparison unless the call passes its own)
 def get_settings():
     with db.connect() as conn:
-        rows = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings WHERE key IN ('denylist', 'bands')")}
+        rows = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings WHERE key IN ('denylist', 'bands', 'synonyms')")}
     saved = db.loads(rows["bands"]) if "bands" in rows else {}
     return {"denylist": db.loads(rows["denylist"]) if "denylist" in rows else list(DEFAULT_DENYLIST), "default_denylist": DEFAULT_DENYLIST,
-            "bands": scope.merge_bands(saved), "bands_custom": saved, "default_bands": scope.merge_bands()}
+            "bands": scope.merge_bands(saved), "bands_custom": saved, "default_bands": scope.merge_bands(),
+            "synonyms": db.loads(rows["synonyms"]) if "synonyms" in rows else []}
 
 
 def set_settings(data):
     """Replace the deny-list and/or change the effort bands: the parts given override the saved ones; ``bands: {}`` (or
     null) goes back to the default bands."""
-    if not isinstance(data, dict) or ("denylist" not in data and "bands" not in data):
+    if not isinstance(data, dict) or ("denylist" not in data and "bands" not in data and "synonyms" not in data):
         raise err("e.settings_keys")
+    synonyms = scope.validate_synonyms(data["synonyms"]) if "synonyms" in data else None
     words = None
     if "denylist" in data:
         words = data["denylist"]
@@ -228,4 +234,34 @@ def set_settings(data):
                              (db.dumps(bands),))
             else:
                 conn.execute("DELETE FROM settings WHERE key='bands'")
+        if synonyms is not None:
+            _store_synonyms(conn, "synonyms", synonyms)
     return get_settings()
+
+
+# ---- synonyms for scope matching: one list for every engagement (settings) plus one per engagement
+def _store_synonyms(conn, key, groups):
+    if groups:
+        conn.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, db.dumps(groups)))
+    else:
+        conn.execute("DELETE FROM settings WHERE key=?", (key,))
+
+
+def get_synonyms(engagement_id):
+    """The groups used when comparing this engagement's scope: its own, then the shared ones."""
+    with db.connect() as conn:
+        _require(conn, engagement_id)
+        row = conn.execute("SELECT value FROM settings WHERE key=?", ("synonyms:" + engagement_id,)).fetchone()
+    own = db.loads(row["value"]) if row else []
+    shared = get_settings()["synonyms"]
+    return {"engagement_id": engagement_id, "groups": own, "shared": shared, "in_use": own + [g for g in shared if g not in own]}
+
+
+def set_synonyms(engagement_id, groups):
+    """Replace this engagement's synonym groups (``[]`` clears them)."""
+    groups = scope.validate_synonyms(groups)
+    with db.connect() as conn:
+        _require(conn, engagement_id)
+        _store_synonyms(conn, "synonyms:" + engagement_id, groups)
+        db.log(conn, engagement_id, "update", "synonyms", engagement_id, "h.synonyms", {"n": len(groups)}, {"groups": groups})
+    return get_synonyms(engagement_id)

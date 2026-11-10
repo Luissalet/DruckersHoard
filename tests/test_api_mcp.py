@@ -17,7 +17,8 @@ from helpers import make_files
 EXPECTED = {"drucker_engagements", "drucker_engagement_get", "drucker_engagement_save", "drucker_item_save", "drucker_item_delete",
             "drucker_history", "drucker_scope_compare", "drucker_proposal", "drucker_review", "drucker_deliverable_save",
             "drucker_version_add", "drucker_comment_add", "drucker_comment_status", "drucker_deliver_select", "drucker_package_verify",
-            "drucker_package", "drucker_settings", "drucker_example"}
+            "drucker_package", "drucker_settings", "drucker_example", "drucker_bands_suggest", "drucker_refs_resolve", "drucker_synonyms",
+            "drucker_proposal_templates", "drucker_scope_decide", "drucker_change_orders"}
 
 
 @pytest.fixture
@@ -102,10 +103,11 @@ def test_catalogue_conventions():
     cat = tools.catalogue()
     assert {t["name"] for t in cat} == EXPECTED and all(t["name"].startswith("drucker_") for t in cat)
     by = {t["name"]: t for t in cat}
-    for name in ("drucker_engagements", "drucker_engagement_get", "drucker_history", "drucker_scope_compare", "drucker_proposal", "drucker_review",
-                 "drucker_package_verify", "drucker_example"):
+    for name in ("drucker_engagements", "drucker_engagement_get", "drucker_history", "drucker_scope_compare", "drucker_review",
+                 "drucker_package_verify", "drucker_example", "drucker_bands_suggest", "drucker_refs_resolve", "drucker_proposal_templates",
+                 "drucker_change_orders"):
         assert by[name]["annotations"]["readOnlyHint"] is True, name
-    for name in ("drucker_engagement_save", "drucker_item_save", "drucker_package", "drucker_comment_add", "drucker_version_add"):
+    for name in ("drucker_engagement_save", "drucker_item_save", "drucker_package", "drucker_comment_add", "drucker_version_add", "drucker_proposal", "drucker_scope_decide"):
         assert by[name]["annotations"]["readOnlyHint"] is False, name
     assert by["drucker_item_delete"]["annotations"]["destructiveHint"] is True
     assert all(t["annotations"]["openWorldHint"] is False and t["inputSchema"]["additionalProperties"] is False for t in cat)

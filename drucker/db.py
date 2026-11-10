@@ -64,10 +64,12 @@ def connect():
     try:
         db.execute("PRAGMA foreign_keys=ON")
         db.executescript(SCHEMA)
-        try:  # databases created before history messages were translatable
-            db.execute("ALTER TABLE history ADD COLUMN msg TEXT")
-        except sqlite3.OperationalError:
-            pass
+        for alter in ("ALTER TABLE history ADD COLUMN msg TEXT",  # databases created before history messages were translatable
+                      "ALTER TABLE engagements ADD COLUMN kind TEXT NOT NULL DEFAULT 'general'"):  # ... and before the engagement type
+            try:
+                db.execute(alter)
+            except sqlite3.OperationalError:
+                pass
         with db:
             yield db
     finally:

@@ -10,8 +10,9 @@ from fastapi import Body, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, db, engagements, examples, package, proposal, review, scope, texts, tools
+from . import __version__, calibration, db, decisions, engagements, examples, links, package, proposal, review, scope, templates, texts, tools
 from .errors import DruckerError, err
+from .hoard_link import family
 from .hoard_link.copilot import install_copilot
 from .hoard_link.tokens import check_bearer, read_or_create_token
 
@@ -19,6 +20,7 @@ STATIC = Path(__file__).parent / "static"
 @asynccontextmanager
 async def lifespan(_app):
     token()  # create the MCP token file in the data folder at start-up
+    family.configure("drucker", str(db.data_dir()))  # lets this app ask the other Hoards through the hub
     yield
 
 
@@ -149,17 +151,63 @@ def scope_compare(body: dict = Body(...)):
 
 @app.post("/api/engagements/{eid}/proposal")
 def make_proposal(eid: str, body: dict = Body(default={})):
-    return proposal.proposal(eid, body.get("format", "json"), body.get("lang"), body.get("denylist"))
+    return proposal.proposal(eid, body.get("format", "json"), body.get("lang"), body.get("denylist"), body.get("template"))
+
+
+@app.get("/api/templates")
+def proposal_templates(lang: str | None = None):
+    return tools.call("drucker_proposal_templates", {"lang": lang} if lang else {})
 
 
 @app.get("/api/engagements/{eid}/proposal.{ext}")
-def download_proposal(eid: str, ext: str, lang: str | None = None):
-    if ext not in ("md", "html"):
-        raise err("e.use_md_html", status=404)
-    out = proposal.proposal(eid, ext, lang)
+def download_proposal(eid: str, ext: str, lang: str | None = None, template: str | None = None):
+    if ext not in ("md", "html", "docx"):
+        raise err("e.use_md_html_docx", status=404)
+    out = proposal.proposal(eid, ext, lang, None, template)
     name = "propuesta" if (texts.norm(lang) or texts.explicit() or "es") == "es" else "proposal"
+    if ext == "docx":
+        return Response(Path(out["path"]).read_bytes(), media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        headers={"Content-Disposition": f'attachment; filename="{name}.docx"'})
     return Response(out["content"], media_type="text/markdown; charset=utf-8" if ext == "md" else "text/html; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{name}.{ext}"'})
+
+
+@app.get("/api/bands/suggest")
+def bands_suggest(status: str = "closed", min_samples: int = calibration.MIN_SAMPLES):
+    return calibration.suggest(status, min_samples)
+
+
+@app.get("/api/engagements/{eid}/refs")
+def engagement_refs(eid: str, owner: str | None = None):
+    return tools.call("drucker_refs_resolve", {"engagement_id": eid, **({"app": owner} if owner else {})})
+
+
+@app.get("/api/engagements/{eid}/synonyms")
+def get_synonyms(eid: str):
+    return engagements.get_synonyms(eid)
+
+
+@app.put("/api/engagements/{eid}/synonyms")
+def put_synonyms(eid: str, body: dict = Body(...)):
+    return engagements.set_synonyms(eid, body.get("groups", []))
+
+
+@app.post("/api/engagements/{eid}/decide")
+def decide(eid: str, body: dict = Body(...)):
+    return decisions.decide(eid, body.get("request"), body.get("option"), body.get("hours"), body.get("money"), body.get("why", ""),
+                            body.get("who", ""), body.get("date"), body.get("add_to_scope", True), lang=body.get("lang"))
+
+
+@app.get("/api/engagements/{eid}/change-orders")
+def change_orders(eid: str, format: str = "json"):
+    return decisions.change_orders(eid, format)
+
+
+@app.get("/api/engagements/{eid}/change-orders.md")
+def change_orders_md(eid: str):
+    out = decisions.change_orders(eid, "md")
+    return Response(out["content"], media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="ordenes-de-cambio.md"' if (texts.explicit() or "es") == "es" else 'attachment; filename="change-orders.md"'})
 
 
 @app.post("/api/engagements/{eid}/deliverables")
