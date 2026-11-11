@@ -82,3 +82,7 @@ Tablas SQLite: `engagements`, `items` (alcance, hito, material, decisión, cobro
 - La validación de formatos es estructural (zip, JSON, CSV, PDF, PNG, GLB, STL, DOCX, XLSX, SVG, MP4), no un analizador completo; la validación Khronos de un GLB necesita Vulcan en marcha.
 - Las referencias vivas necesitan el Hub y la app propietaria en marcha; el movimiento de Ledger se busca por ventana de fechas o título porque Ledger no tiene lectura por id.
 - La interfaz no tiene autenticación (app local en 127.0.0.1, como el resto de la familia).
+
+## Skills para los agentes que se conectan
+
+Esta app lleva procedimientos de la biblioteca de skills del espacio de trabajo de la familia para los agentes que se conectan: `engagement-proposal-and-delivery`, `writing-plans`, `pretask-interview`, `docs-release-review`. Aparecen en lo que el agente lee al conectarse, se leen con `skills_list` y `skill_read`, se buscan y asignan con `skills_library` y `skills_assign`, y se ofrecen como prompts. Se eligen en la página de skills (`/api/agent/skills/page`) o en la pestaña Skills del hub; el bloque `skills` de `faustus-plugin.json` guarda lo que la app pide por defecto.

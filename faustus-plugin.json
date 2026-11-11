@@ -86,5 +86,6 @@
       "launcher": "/api/copilot/launcher.js"
     },
     "agent_contract": false
-  }
+  },
+  "skills": {"slugs": ["engagement-proposal-and-delivery", "writing-plans", "pretask-interview", "docs-release-review"], "limit": 4}
 }

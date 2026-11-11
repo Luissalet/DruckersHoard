@@ -25,3 +25,7 @@ Interfaz: Encargos (pestañas Alcance, Hitos, Materiales, Decisiones, Horas real
 Verificación: 137 pruebas pytest (`python -m pytest -q`), incluido el puente stdio contra un servidor real con token. Capturas con navegador real en 1200 px y 390 px sin errores de consola ni desbordamiento horizontal. Arranca desde el Hub (puerto 5246). Comprobado en vivo el 10-11-2026 con People, Ledger y Vulcan reales por REST, MCP por el Hub y la interfaz (Playwright, es y en), y con un turno real de Faustus (27 llamadas, encargo completo creado, comparado con sinónimo, decisión y órdenes de cambio correctos). Sin probar en vivo: punteros de Atlas (Atlas no arrancó por un BOM en su config), descarga del zip desde el navegador en disco.
 
 Límites: horas por reglas, no por modelo; verificación de formatos estructural; URL remotas no verificables y punteros de Atlas solo con Atlas en marcha; sin autenticación en la UI. Ver README.es.md.
+
+## Skills for the agents that connect
+
+This app carries procedures from the skill library of the family's workspace for the agents that connect to it: `engagement-proposal-and-delivery`, `writing-plans`, `pretask-interview`, `docs-release-review`. They are named in what an agent reads on connecting, read with `skills_list` and `skill_read`, searched and assigned with `skills_library` and `skills_assign`, and offered as prompts. The person chooses them on the skills page (`/api/agent/skills/page`) or in the hub's Skills tab; the `skills` block of `faustus-plugin.json` holds what the app asks for by default.
