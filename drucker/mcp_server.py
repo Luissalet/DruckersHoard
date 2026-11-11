@@ -11,7 +11,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import __version__
+from .hoard_link import skills as family_skills
 from .tools import catalogue
+
+SKILLS = family_skills.raw("drucker", root=__file__)      # the skills this app carries, for the agent that connects
 
 
 def data_folder() -> Path:
@@ -49,13 +52,16 @@ def call_app(name, arguments):
 
 def handle(req):
     method, params = req.get("method"), req.get("params") or {}
+    own = SKILLS.answer(method, params)
+    if own is not None:
+        return own
     if method == "initialize":
-        return {"protocolVersion": params.get("protocolVersion") or "2024-11-05", "capabilities": {"tools": {}},
-                "serverInfo": {"name": "drucker-hoard", "version": __version__}}
+        return SKILLS.extend(method, {"protocolVersion": params.get("protocolVersion") or "2024-11-05", "capabilities": {"tools": {}},
+                                      "serverInfo": {"name": "drucker-hoard", "version": __version__}})
     if method == "ping":
         return {}
     if method == "tools/list":
-        return {"tools": catalogue()}
+        return SKILLS.extend(method, {"tools": catalogue()})
     if method == "tools/call":
         try:
             ok, body = call_app(params.get("name"), params.get("arguments") or {})
