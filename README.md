@@ -1,5 +1,7 @@
 # Drucker's Hoard
 
+[Leer en español](README.es.md)
+
 The professional engagement office of the Hoard family (Spanish UI name: «Oficina de encargos»). It keeps one file per engagement and helps with the five jobs around it: scope changes, proposals, deliverable review and delivery packages.
 
 It is not a CRM. Contacts stay in People, money movements in Ledger and files in Atlas. This app stores references to them (`{app, id}`, a path or a URL), never copies. A payment entered here without a Ledger reference is marked `manual`.
@@ -64,7 +66,7 @@ Saved bands: Compare scope > Effort bands edits every [min, max] pair and saves 
 ## Surfaces
 
 - REST: `/api/...` (OpenAPI at `/docs`). Writes from another origin are refused.
-- MCP (stdio): `python -m drucker.mcp_server`. Twenty-four tools prefixed `drucker_`: `drucker_engagements`, `drucker_engagement_get`, `drucker_engagement_save`, `drucker_item_save`, `drucker_item_delete`, `drucker_history`, `drucker_scope_compare`, `drucker_proposal`, `drucker_review`, `drucker_deliverable_save`, `drucker_version_add`, `drucker_comment_add`, `drucker_comment_status`, `drucker_deliver_select`, `drucker_package_verify`, `drucker_package`, `drucker_settings`, `drucker_example`, `drucker_bands_suggest`, `drucker_refs_resolve`, `drucker_synonyms`, `drucker_proposal_templates`, `drucker_scope_decide`, `drucker_change_orders`. Read-only tools declare `readOnlyHint`; `drucker_item_delete` declares `destructiveHint`; `drucker_proposal` writes a file for `docx` and is not read-only. The bridge lists tools without the app running. Calls go to the running app on 127.0.0.1 with the token in `data/mcp-token` (`POST /api/agent/call`, bearer token).
+- MCP (stdio): `python -m drucker.mcp_server`. Tools prefixed `drucker_`: `drucker_engagements`, `drucker_engagement_get`, `drucker_engagement_save`, `drucker_item_save`, `drucker_item_delete`, `drucker_history`, `drucker_scope_compare`, `drucker_proposal`, `drucker_review`, `drucker_deliverable_save`, `drucker_version_add`, `drucker_comment_add`, `drucker_comment_status`, `drucker_deliver_select`, `drucker_package_verify`, `drucker_package`, `drucker_settings`, `drucker_example`, `drucker_bands_suggest`, `drucker_refs_resolve`, `drucker_synonyms`, `drucker_proposal_templates`, `drucker_scope_decide`, `drucker_change_orders`. Read-only tools declare `readOnlyHint`; `drucker_item_delete` declares `destructiveHint`; `drucker_proposal` writes a file for `docx` and is not read-only. The bridge lists tools without the app running. Calls go to the running app on 127.0.0.1 with the token in `data/mcp-token` (`POST /api/agent/call`, bearer token).
 - Copilot: the common family panel and launcher, mounted at `/api/copilot/*`. The page exposes what is on screen through `window.hoardCopilot`.
 
 ## Data
@@ -73,7 +75,11 @@ SQLite tables: `engagements`, `items` (scope, milestone, material, decision, pay
 
 ## Tests
 
-`python -m pytest -q`: 137 tests covering real-hours calibration, live references with the other apps replaced by a fake hub, Atlas pointers, DOCX/XLSX/SVG/MP4/PDF/GLB validation, templates and DOCX, synonyms, decisions and the change-order report, plus engagement CRUD and history, scope classes and ranges, saved effort bands, proposal tagging and the deny-list, stale-feedback detection, package verification (missing file, bad hash, broken PNG/PDF/GLB/STL/JSON/CSV/ZIP, unauthorised source), deterministic zip bytes, REST, the token-protected agent route and the stdio bridge against a live server.
+```
+python -m pytest -q
+```
+
+Tests use temporary data folders, a fake hub in place of the other apps, and generated sample files; nothing real is touched.
 
 ## Limits
 

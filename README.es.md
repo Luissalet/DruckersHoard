@@ -1,5 +1,7 @@
 # Drucker's Hoard
 
+[Read in English](README.md)
+
 La oficina de encargos profesionales de la familia Hoard. Guarda un expediente por encargo y ayuda con cinco tareas: cambios de alcance, propuestas, revisión de entregables y paquetes de entrega.
 
 No es un CRM. Los contactos siguen en People, los movimientos de dinero en Ledger y los archivos en Atlas. Aquí solo se guardan referencias (`{app, id}`, una ruta o una URL), nunca copias. Un cobro sin referencia a Ledger queda marcado como `manual`.
@@ -64,7 +66,7 @@ Bandas guardadas: Comparar alcance > Bandas de esfuerzo edita cada par [mín, m�
 ## Superficies
 
 - REST: `/api/...` (OpenAPI en `/docs`). Se rechazan escrituras desde otro origen.
-- MCP (stdio): `python -m drucker.mcp_server`. Veinticuatro herramientas con prefijo `drucker_` (lista en README.md). Las de solo lectura declaran `readOnlyHint`; `drucker_item_delete` declara `destructiveHint`; `drucker_proposal` escribe un archivo con `docx` y no es de solo lectura. El puente lista herramientas sin la app en marcha. Las llamadas van a la app en 127.0.0.1 con el token de `data/mcp-token` (`POST /api/agent/call`, token bearer).
+- MCP (stdio): `python -m drucker.mcp_server`. Herramientas con prefijo `drucker_`: `drucker_engagements`, `drucker_engagement_get`, `drucker_engagement_save`, `drucker_item_save`, `drucker_item_delete`, `drucker_history`, `drucker_scope_compare`, `drucker_proposal`, `drucker_review`, `drucker_deliverable_save`, `drucker_version_add`, `drucker_comment_add`, `drucker_comment_status`, `drucker_deliver_select`, `drucker_package_verify`, `drucker_package`, `drucker_settings`, `drucker_example`, `drucker_bands_suggest`, `drucker_refs_resolve`, `drucker_synonyms`, `drucker_proposal_templates`, `drucker_scope_decide`, `drucker_change_orders`. Las de solo lectura declaran `readOnlyHint`; `drucker_item_delete` declara `destructiveHint`; `drucker_proposal` escribe un archivo con `docx` y no es de solo lectura. El puente lista herramientas sin la app en marcha. Las llamadas van a la app en 127.0.0.1 con el token de `data/mcp-token` (`POST /api/agent/call`, token bearer).
 - Copiloto: panel y lanzador comunes de la familia, en `/api/copilot/*`. La página expone lo que hay en pantalla mediante `window.hoardCopilot`.
 
 ## Datos
@@ -73,7 +75,11 @@ Tablas SQLite: `engagements`, `items` (alcance, hito, material, decisión, cobro
 
 ## Pruebas
 
-`python -m pytest -q`: 137 pruebas. Cubren calibración con horas reales, referencias vivas con las otras apps sustituidas por un Hub falso, punteros de Atlas, validación de DOCX/XLSX/SVG/MP4/PDF/GLB, plantillas y DOCX, sinónimos, decisiones e informe de órdenes de cambio, y además altas y cambios con historial, clases y rangos de alcance, bandas guardadas, etiquetado de propuestas y lista prohibida, detección de comentarios obsoletos, verificación de paquetes (archivo ausente, hash distinto, PNG/PDF/GLB/STL/JSON/CSV/ZIP rotos, fuente no autorizada), zip con bytes idénticos a igual entrada, REST, la ruta de agente con token y el puente stdio contra un servidor real.
+```
+python -m pytest -q
+```
+
+Las pruebas usan carpetas de datos temporales, un Hub falso en lugar de las otras apps y archivos de muestra generados; no se toca nada real.
 
 ## Límites
 
