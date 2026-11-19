@@ -92,5 +92,5 @@
     },
     "agent_contract": false
   },
-  "skills": {"slugs": ["engagement-proposal-and-delivery", "writing-plans", "pretask-interview", "docs-release-review"], "limit": 4}
+  "skills": {"slugs": ["engagement-proposal-and-delivery", "writing-plans", "pretask-interview", "docs-release-review", "studio-drucker-engagement-brief"], "limit": 5}
 }
