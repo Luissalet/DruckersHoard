@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from . import calibration, decisions, engagements, examples, links, package, proposal, review, scope, templates, texts
 from .errors import err
+from .models import ITEM_KINDS as _K, ITEM_MODELS
 
 
 def f(kind="string", **extra):
@@ -13,10 +14,27 @@ OBJ = f("object")
 LANG = {"type": "string", "enum": ["es", "en"], "description": "Language of every text in the answer (es: Spanish of Spain, en: English). Defaults to the UI language, else English. Codes and numbers do not change."}
 EID = {"engagement_id": f(description="Engagement id")}
 DID = {"deliverable_id": f(description="Deliverable id")}
-from .models import ITEM_KINDS as _K
 ITEM_KINDS = list(_K)
 PKG = {**DID, "version": f(description="Version number (1, 2...) or version id"),
        "spec": f("object", description="{editable_files, exports, data_sources:[{name,authorised}], instructions, examples, limitations}")}
+
+
+def _engagement_items():
+    properties, definitions = {}, {}
+    for kind, model in ITEM_MODELS.items():
+        schema = model.model_json_schema()
+        definitions.update(schema.pop("$defs", {}))
+        schema["properties"]["id"] = f(description="Existing item ID for a partial update.")
+        if required := schema.pop("required", []):
+            schema["anyOf"] = [{"required": required}, {"required": ["id"]}]
+        # Read-back items may include metadata the update handler ignores.
+        schema.pop("additionalProperties", None)
+        properties[kind] = f("array", items=schema)
+    return f("object", properties=properties, additionalProperties=False,
+             description="Group items by kind. New scope items need title; new assumptions need text."), definitions
+
+
+ENGAGEMENT_ITEMS, ITEM_DEFINITIONS = _engagement_items()
 
 
 def _scope_compare(a):
@@ -82,7 +100,7 @@ SPECS = [
      {"id": f(), "name": f(), "client_name": f(), "client_ref": f("object", description="{app:'people', id, label}"), "origin": f(),
       "status": f(enum=["lead", "active", "paused", "closed"]), "currency": f(), "budget_min": f("number"), "budget_max": f("number"),
       "kind": f(enum=list(templates.TYPES), description="Type of engagement: picks the proposal template (general, report, data, design, training)"),
-      "notes": f(), "denylist": f("array", items=f()), "items": f("object", description="{kind: [item, ...]}")}, [], False, False, engagements.save),
+      "notes": f(), "denylist": f("array", items=f()), "items": ENGAGEMENT_ITEMS}, [], False, False, engagements.save),
     ("drucker_item_save", "Add or update one item of an engagement (scope, milestone, material, decision, payment, assumption, question). Include id inside item to update.",
      {**EID, "kind": f(enum=ITEM_KINDS), "item": OBJ}, ["engagement_id", "kind", "item"], False, False,
      lambda a: engagements.save_item(a["engagement_id"], a["kind"], a["item"])),
@@ -155,7 +173,10 @@ HANDLERS = {s[0]: s[6] for s in SPECS}
 
 
 def catalogue():
-    return [{"name": n, "description": d, "inputSchema": {"type": "object", "properties": {**p, "lang": LANG}, "required": r, "additionalProperties": False},
+    return [{"name": n, "description": d,
+             "inputSchema": {"type": "object", "properties": {**p, "lang": LANG}, "required": r,
+                             "additionalProperties": False,
+                             **({"$defs": ITEM_DEFINITIONS} if n == "drucker_engagement_save" else {})},
              "annotations": {"readOnlyHint": ro, "destructiveHint": de, "openWorldHint": False}}
             for n, d, p, r, ro, de, _ in SPECS]
 
