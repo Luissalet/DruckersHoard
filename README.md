@@ -65,6 +65,8 @@ Saved bands: Compare scope > Effort bands edits every [min, max] pair and saves 
 
 ## Surfaces
 
+Declares its order-to-brief handoff for production planning. The brief stays tied to its engagement ID, scope, assumptions and source references.
+
 - REST: `/api/...` (OpenAPI at `/docs`). Writes from another origin are refused.
 - MCP (stdio): `python -m drucker.mcp_server`. Tools prefixed `drucker_`: `drucker_engagements`, `drucker_engagement_get`, `drucker_engagement_save`, `drucker_item_save`, `drucker_item_delete`, `drucker_history`, `drucker_scope_compare`, `drucker_proposal`, `drucker_review`, `drucker_deliverable_save`, `drucker_version_add`, `drucker_comment_add`, `drucker_comment_status`, `drucker_deliver_select`, `drucker_package_verify`, `drucker_package`, `drucker_settings`, `drucker_example`, `drucker_bands_suggest`, `drucker_refs_resolve`, `drucker_synonyms`, `drucker_proposal_templates`, `drucker_scope_decide`, `drucker_change_orders`. Read-only tools declare `readOnlyHint`; `drucker_item_delete` declares `destructiveHint`; `drucker_proposal` writes a file for `docx` and is not read-only. The bridge lists tools without the app running. Calls go to the running app on 127.0.0.1 with the token in `data/mcp-token` (`POST /api/agent/call`, bearer token).
 - Copilot: the common family panel and launcher, mounted at `/api/copilot/*`. The page exposes what is on screen through `window.hoardCopilot`.
