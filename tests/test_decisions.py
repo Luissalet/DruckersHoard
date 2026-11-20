@@ -18,7 +18,7 @@ def _eng(**kw):
 def test_change_order_is_logged_with_range_and_becomes_an_agreed_scope_item():
     e = _eng()
     out = decisions.decide(e["id"], "Exportar también a PDF", "change_order", hours={"min": 4, "max": 8},
-                           money={"min": 200, "max": 400, "currency": "eur"}, why="Lo pidió el cliente", who="Luis", date="2026-11-02")
+                           money={"min": 200, "max": 400, "currency": "eur"}, why="Lo pidió el cliente", who="Responsable del proyecto", date="2026-11-02")
     d = out["decision"]
     assert d["option"] == "change_order" and d["hours"] == {"min": 4, "max": 8} and d["money"]["currency"] == "EUR" and d["date"] == "2026-11-02"
     assert out["scope_item"]["origin"] == "change" and out["scope_item"]["status"] == "agreed"
@@ -72,7 +72,7 @@ def test_report_counts_only_the_latest_decision_per_request():
 
 def test_report_markdown_and_totals_by_currency():
     e = _eng()
-    decisions.decide(e["id"], "A", "change_order", hours={"min": 1, "max": 2}, money={"min": 10, "max": 20, "currency": "EUR"}, who="Luis")
+    decisions.decide(e["id"], "A", "change_order", hours={"min": 1, "max": 2}, money={"min": 10, "max": 20, "currency": "EUR"}, who="Responsable del proyecto")
     decisions.decide(e["id"], "B", "change_order", hours={"min": 3, "max": 4}, money={"min": 5, "max": 6, "currency": "EUR"})
     r = decisions.change_orders(e["id"], "md")
     assert r["totals"]["money"] == {"EUR": {"min": 15.0, "max": 26.0}} and r["totals"]["money_complete"] is True
