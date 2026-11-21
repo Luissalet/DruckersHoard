@@ -78,6 +78,15 @@
   },
   "notes": "Explicit startup only. MCP stdio is a bridge: tools/list needs no running app; tools/call forwards to the app on 127.0.0.1 with the token the app writes to its data folder (data/mcp-token). Start the app first. Copilot uses the canonical family relay.",
   "x-family": {
+    "isolated_instance": {
+      "data_env": "DRUCKER_DATA",
+      "argv": [
+        "-m",
+        "drucker",
+        "--port",
+        "{PORT}"
+      ]
+    },
     "production": {
       "handoffs": [
         {"accepts": "production-order", "produces": ["production-brief"], "skill": "engagement-proposal-and-delivery", "check": {"en": "Reread the engagement by ID and compare scope, assumptions and source references with the request.", "es": "Relee el encargo por ID y coteja el alcance, los supuestos y las referencias con la petición."}}
